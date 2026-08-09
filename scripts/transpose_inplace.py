@@ -16,7 +16,7 @@ import pymupdf
 from pdfsurgery import parse, edit, Y_SLOTS, X_SLOTS
 from keysig import positions, clone
 import chords as CH
-from omr import staves, run, is_music_font, is_chord_font
+from omr import staves, run, is_music_font, is_chord_font, norm_glyph
 
 STEPS = "CDEFGAB"
 SEMI = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
@@ -25,7 +25,10 @@ SIG = {"C": 0, "G": 1, "D": 2, "A": 3, "E": 4, "B": 5, "F#": 6, "C#": 7,
 ORDER = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
 
 # Sibelius music fonts remap ASCII; these are the glyphs that ride with a note.
-NOTEHEADS = set("wœ˙œú")     # whole, quarter/eighth, half
+# Whole, half and quarter/eighth heads in both font encodings. Note that
+# \u00fa is a REST in some variants - it sits at a fixed staff position, so
+# including it would drag rests around with the notes.
+NOTEHEADS = set("w\u0153\u02d9\u00cf")
 ARTICULATIONS = set("^.>-_")                # accent, staccato, tenuto
 ACCIDENTALS = {"b": -1, "#": 1, "♭": -1, "♯": 1}
 
@@ -54,32 +57,100 @@ def diatonic_shift(src, dst):
 
 
 def detect_source_key(pdf):
-    """Read the key signature from the engraved staff: count flat/sharp glyphs
-    between the clef and the time signature on the first system."""
-    doc = pymupdf.open(pdf)
-    page = doc[0]
-    sysl = run(pdf)
-    if not sysl:
-        raise SystemExit("no staves found")
-    st = sysl[0]["st"]
-    y0, y1 = st[0][0], st[4][0]
-    flats = sharps = 0
-    for b in page.get_text("rawdict")["blocks"]:
-        for l in b.get("lines", []):
-            for s in l["spans"]:
-                if not is_music_font(s["font"]) or is_chord_font(s["font"]):
-                    continue
-                for c in s["chars"]:
-                    if not (y0 - 12 < c["origin"][1] < y1 + 12):
-                        continue
-                    if c["origin"][0] > st[0][1] + 60:   # past the key sig
-                        continue
-                    if c["c"] == "b":
-                        flats += 1
-                    elif c["c"] == "#":
-                        sharps += 1
-    return -flats if flats else sharps
+    """Read the key signature by counting the accidentals in a staff header.
 
+    Only the first system of a page prints a clef and key signature; later
+    systems start straight into the music. So look for a staff that actually
+    has a clef, and count the accidentals between it and the first note.
+    """
+    doc = pymupdf.open(pdf)
+    for pno in range(doc.page_count):
+        page = doc[pno]
+        for s in run(pdf) if pno == 0 else []:
+            pass
+        sysl = [x for x in run(pdf) if x["page"] == pno + 1]
+        for st_info in sysl:
+            st = st_info["st"]
+            y0, y1 = st[0][0], st[4][0]
+            mid = (y0 + y1) / 2
+            clef_x = None
+            acc = []
+            for b in page.get_text("rawdict")["blocks"]:
+                for l in b.get("lines", []):
+                    for sp in l["spans"]:
+                        if not is_music_font(sp["font"]) or is_chord_font(sp["font"]):
+                            continue
+                        for c in sp["chars"]:
+                            if abs(c["origin"][1] - mid) > 26:
+                                continue
+                            g = norm_glyph(c["c"])
+                            x = c["origin"][0]
+                            if g in ("&", "?") and (clef_x is None or x < clef_x):
+                                clef_x = x
+                            elif g in ("b", "#"):
+                                acc.append((x, g))
+            if clef_x is None:
+                continue                      # continuation system: no header
+            # accidentals in the header sit just right of the clef
+            hdr = [g for x, g in acc if clef_x < x < clef_x + 90]
+            if not hdr:
+                return 0
+            return -len(hdr) if hdr[0] == "b" else len(hdr)
+    return None                               # no header found anywhere
+
+
+def source_key_signature(pdf):
+    """Best available reading of the source key signature."""
+    sig = detect_source_key(pdf)
+    return key_from_chords(pdf) if sig is None else sig
+
+
+def key_from_chords(pdf):
+    """Infer the key signature from the chord symbols.
+
+    Some exports draw the clef as vector paths and print no key signature at
+    all, so there is no header to measure. The chord roots still pin the key
+    down: score each of the 12 signatures by how many chords are diatonic to it.
+    """
+    import collections
+    doc = pymupdf.open(pdf)
+    roots = []
+    for page in doc:
+        for b in page.get_text("rawdict")["blocks"]:
+            for l in b.get("lines", []):
+                for sp in l["spans"]:
+                    if not is_chord_font(sp["font"]):
+                        continue
+                    txt = "".join(c["c"] for c in sp["chars"]).strip()
+                    # Only the ROOT names the key. Matching every letter would
+                    # count the bass of a slash chord and the B of a passing
+                    # diminished, which is enough to flip the answer.
+                    m = re.match(r"^([A-G])([\u00a8\u00ab#b]?)", txt)
+                    if not m:
+                        continue
+                    acc = m.group(2)
+                    alt = -1 if acc in ("\u00a8", "b") else 1 if acc in ("\u00ab", "#") else 0
+                    dim = "\u00ba" in txt or "dim" in txt   # passing chord, weak evidence
+                    roots.append(((SEMI[m.group(1)] + alt) % 12, 0.25 if dim else 1.0))
+    if not roots:
+        return 0
+    cnt = collections.Counter()
+    for pc, w in roots:
+        cnt[pc] += w
+    best, best_score = 0, -1e9
+    for sig in range(-7, 8):
+        tonic = (7 * sig) % 12                       # major tonic for this signature
+        scale = {(tonic + i) % 12 for i in (0, 2, 4, 5, 7, 9, 11)}
+        # Reward diatonic roots, but penalise non-diatonic ones. Counting only
+        # matches lets a superset signature always win: every chord of F major
+        # is also in C major, so C would tie or beat F on raw hits alone. The
+        # Bb that forces F major has to cost C major something.
+        inside = sum(n for pc, n in cnt.items() if pc in scale)
+        outside = sum(n for pc, n in cnt.items() if pc not in scale)
+        score = inside - 2.0 * outside - abs(sig) * 0.1
+        if score > best_score:
+            best, best_score = sig, score
+    return best
 
 def staff_geom(page):
     sts = staves(page)
@@ -112,17 +183,21 @@ def first_note_x(page, gm, geom):
     out = []
     for st in geom:
         xs = [x for (x, y), (ch, fn, bb) in gm.items()
-              if ch in NOTEHEADS and abs(y - (st["top"] + st["bot"]) / 2) < 40]
+              if norm_glyph(ch) in NOTEHEADS
+              and abs(y - (st["top"] + st["bot"]) / 2) < 40]
         out.append(min(xs) if xs else st["x0"] + 60)
     return out
 
 
 def classify_glyph(ch, font, x, y, geom, notex):
     """True if this glyph rides with the notes."""
-    if "Inkpen2Std" not in font and "Opus" not in font and "Std" not in font:
+    # Use the shared font test: exports vary between "Inkpen2Std" and plain
+    # "Inkpen2", and hardcoding the former silently skipped every note.
+    if not is_music_font(font) or is_chord_font(font):
         return False
-    if "Chords" in font or "Script" in font or "Text" in font:
+    if "Script" in font or "Text" in font:
         return False
+    ch = norm_glyph(ch)
     if ch in NOTEHEADS or ch in ARTICULATIONS:
         return True
     if ch in ACCIDENTALS:
@@ -146,11 +221,17 @@ def keysig_edits(data, els, gm, geom, notex, H, dst_sig, half):
                 continue
             x, y = e.glyphs[0][0], H - e.glyphs[0][1]
             ch, fn = gm.get((round(x, 1), round(y, 1)), ("?", "?", None))[:2]
+            ch = norm_glyph(ch)
             if ch not in ACCIDENTALS or "Chords" in fn:
                 continue
-            if abs(y - mid) < 28 and x < nx - 12:
+            # A key-signature accidental sits in the staff header, immediately
+            # after the clef - not merely anywhere left of the first note.
+            if abs(y - mid) < 28 and x < nx - 12 and x < st["x0"] + 95:
                 acc.append((x, y, e))
         if not acc:
+            # Nothing to clone from and nothing to remove: this staff prints no
+            # key signature (common on continuation systems and on charts that
+            # rely on chord symbols alone). Leave it be.
             continue
         acc.sort()
         idx0 = round((acc[0][1] - st["top"]) / half)
@@ -280,19 +361,44 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
         fn = gm.get((round(e.glyphs[0][0], 1),
                      round(H - e.glyphs[0][1], 1)))[1]
         items.append((e, "".join(chars), fn))
-    if not items:
-        return {}, 0
+
+    # Some exports emit one BT block per character, so "Bb" arrives as two
+    # separate elements. Merge neighbours on the same line into one symbol,
+    # otherwise only the bare root is seen and the accidental is lost.
+    items.sort(key=lambda it: (round(H - it[0].glyphs[0][1], 1),
+                               it[0].glyphs[0][0]))
+    merged, i = [], 0
+    while i < len(items):
+        e, txt, fn = items[i]
+        grp = [items[i]]
+        j = i + 1
+        while j < len(items):
+            pe, ptxt, _ = grp[-1]
+            ne = items[j][0]
+            if abs((H - ne.glyphs[0][1]) - (H - pe.glyphs[0][1])) > 1.5:
+                break
+            gap = ne.glyphs[0][0] - pe.glyphs[-1][0]
+            if not (0 <= gap < 11):
+                break
+            grp.append(items[j])
+            j += 1
+        merged.append((grp[0][0], "".join(g[1] for g in grp), grp[0][2],
+                       [g[0] for g in grp]))
+        i = j
+    items = merged
+    if not items:                       # chart carries no chord symbols
+        return {}, 0, [], []
     cid, width = CH.learn(runs)
     fallback = sorted(width.values())[len(width) // 2] if width else 0
     # horizontal room before the next chord symbol on the same line
     pos = sorted((round(H - e.glyphs[0][1], 1), e.glyphs[0][0], i)
-                 for i, (e, _, _f) in enumerate(items))
+                 for i, (e, _t, _f, _g) in enumerate(items))
     room = {}
     for k, (y, x, i) in enumerate(pos):
         nxt = next((px for py, px, _ in pos[k + 1:] if abs(py - y) < 2), None)
         room[i] = (nxt - x - 1.5) if nxt else 1e9
     edits, n, missed, redraw = {}, 0, [], []
-    for i, (e, text, fontname) in enumerate(items):
+    for i, (e, text, fontname, group) in enumerate(items):
         new = "".join(CH.transpose_glyphs(list(text), steps, semis))
         if new == text:
             continue
@@ -305,19 +411,27 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
         rep = CH.rebuild(data[e.bt:e.et], new, cid, width, fallback, sq)
         if rep is not None:
             edits[(e.bt, e.et)] = rep
+            for extra in group[1:]:          # symbol was split across blocks
+                edits[(extra.bt, extra.et)] = b" "
             n += 1
         else:
             # The embedded font is subsetted and lacks a letter we now need.
             # Blank the old symbol and redraw it with the full installed face.
             full = CH.find_full_font(fontname)
             if full:
-                size = float(CH.HEAD.search(data[e.bt:e.et]).group(2))
+                # Font size may come from Tf, or from the Tm scale when Tf is
+                # "1" - measure the drawn glyph instead of trusting either.
+                bb = gm.get((round(e.glyphs[0][0], 1),
+                             round(H - e.glyphs[0][1], 1)))
+                size = (bb[2][3] - bb[2][1]) * 1.0 if bb and bb[2] else 10.0
                 redraw.append({"x": e.glyphs[0][0],
                                "y": H - e.glyphs[0][1],
                                "text": new,
-                               "size": size * abs(e.ctm[0]),
+                               "size": max(4.0, size),
                                "font": full})
                 edits[(e.bt, e.et)] = b" "
+                for extra in group[1:]:      # symbol split across blocks
+                    edits[(extra.bt, extra.et)] = b" "
                 n += 1
             else:
                 missed.append("".join(new))
@@ -334,7 +448,7 @@ def ledger_edits(subs, gm, geom, H, steps, half):
     """
     edits = {}
     notes = [(x, y) for (x, y), (ch, fn, bb) in gm.items()
-             if ch in NOTEHEADS and "Chords" not in fn]
+             if norm_glyph(ch) in NOTEHEADS and "Chords" not in fn]
     for ops in subs.values():
         pts = [p for o in ops for p in o.pts]
         xs = [p[0] for p in pts]
@@ -414,7 +528,15 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
         d = e.ctm0[3]
         if abs(d) < 1e-9:
             continue
-        edits[(e.inject_at, e.inject_at)] = b" 1 0 0 1 0 %.5f cm " % (dy_user / d)
+        shift = b" 1 0 0 1 0 %.5f cm " % (dy_user / d)
+        if e.standalone:
+            # Text outside q...Q has nothing to restore the CTM, so an
+            # unbracketed cm would leak into every element after it and the
+            # displacement would accumulate down the page. Bracket it.
+            edits[(e.inject_at, e.inject_at)] = b" q" + shift
+            edits[(e.et, e.et)] = b" Q "
+        else:
+            edits[(e.inject_at, e.inject_at)] = shift
         stats["glyph"] += len(e.glyphs)
 
     # ---- paths: rewrite the y operand of moving subpaths

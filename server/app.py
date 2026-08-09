@@ -31,11 +31,31 @@ def db():
     return c
 
 
+def pick_tonic(doc, maj, rel_minor):
+    """Major or relative minor? Let the chord symbols decide."""
+    import collections, re as _re
+    roots = collections.Counter()
+    for page in doc:
+        for b in page.get_text("rawdict")["blocks"]:
+            for l in b.get("lines", []):
+                for sp in l["spans"]:
+                    if "Chords" not in sp["font"]:
+                        continue
+                    t = "".join(c["c"] for c in sp["chars"]).strip()
+                    m = _re.match(r"^([A-G][\u00a8\u00ab#b]?)", t)
+                    if m:
+                        minor = "\u2039" in t or _re.search(r"m(?!aj)", t)
+                        roots[(m.group(1).replace("\u00a8", "b"), bool(minor))] += 1
+    maj_hits = roots.get((maj, False), 0)
+    min_hits = roots.get((rel_minor, True), 0)
+    return rel_minor + "m" if min_hits > maj_hits else maj
+
+
 # ----------------------------------------------------------------- detection
 def detect(pdf_path):
     """Read the source key signature and title straight from the PDF."""
     import pymupdf
-    from sheet_transpose.transpose_inplace import detect_source_key
+    from sheet_transpose.transpose_inplace import source_key_signature
     info = {"key": None, "sig": None, "pages": 0, "title": None}
     try:
         doc = pymupdf.open(pdf_path)
@@ -49,13 +69,16 @@ def detect(pdf_path):
                     if t and s["size"] > best[0] and len(t) > 2:
                         best = (s["size"], t)
         info["title"] = best[1]
-        sig = detect_source_key(pdf_path)
+        sig = source_key_signature(pdf_path)
         info["sig"] = sig
         maj = {0: "C", -1: "F", -2: "Bb", -3: "Eb", -4: "Ab", -5: "Db", -6: "Gb",
                1: "G", 2: "D", 3: "A", 4: "E", 5: "B", 6: "F#"}.get(sig, "C")
         rel_minor = KEYS[(KEYS.index(maj) - 3) % 12] if maj in KEYS else "A"
-        info["key"] = rel_minor + "m"
         info["major"] = maj
+        info["minor"] = rel_minor + "m"
+        # Pick whichever tonic the chart actually leans on: compare how often
+        # the major tonic and the relative minor appear as chord roots.
+        info["key"] = pick_tonic(doc, maj, rel_minor)
     except Exception as e:
         info["error"] = str(e)[:200]
     return info

@@ -288,7 +288,10 @@ async function send(f){
     state.token=j.token;state.src=j.key||"Am";state.minor=/m$/.test(state.src);
     state.title=j.title||f.name.replace(/\.pdf$/i,"");
     $("ttl").textContent=state.title;
-    $("meta").textContent=`${j.pages} page${j.pages===1?"":"s"} · key signature ${j.sig>0?j.sig+" sharp":j.sig<0?(-j.sig)+" flat":"none"}${Math.abs(j.sig)===1?"":"s"}`;
+    const n=Math.abs(j.sig||0);
+    const ks = n===0 ? "no sharps or flats"
+             : n+" "+(j.sig>0?"sharp":"flat")+(n===1?"":"s");
+    $("meta").textContent=`${j.pages} page${j.pages===1?"":"s"} · ${ks}`;
     $("kfrom").textContent=state.src;
     state.dst=null;$("kto").textContent="—";$("semi").textContent="pick a key";
     buildKeys();$("card").classList.add("on");$("go").disabled=true;

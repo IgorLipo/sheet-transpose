@@ -12,14 +12,18 @@ the geometry is one uniform translation - which is what makes this exact.
 """
 import re, math
 
-TOKEN = re.compile(rb"""
+# PDF operators, longest first. Streams may run operators together with no
+# whitespace ("lSQ", "TjET"), so a greedy [A-Za-z]+ would fuse them into one
+# bogus token and the entire text layer would vanish.
+_OPS = 'BDC|BMC|EMC|SCN|scn|B\\*|BI|BT|BX|CS|DP|Do|EI|ET|EX|ID|MP|RG|SC|T\\*|TD|TJ|TL|Tc|Td|Tf|Tj|Tm|Tr|Ts|Tw|Tz|W\\*|b\\*|cm|cs|d0|d1|f\\*|gs|re|ri|sc|sh|"|\'|B|F|G|J|K|M|Q|S|W|b|c|d|f|g|h|i|j|k|l|m|n|q|s|v|w|y'
+TOKEN = re.compile((r"""
     (?P<hexstr><[0-9A-Fa-f\s]*>)
   | (?P<str>\((?:\\.|[^\\()])*\))
   | (?P<name>/[^\s/\[\]()<>{}]+)
   | (?P<num>[-+]?\d*\.?\d+)
   | (?P<arr>\[[^\]]*\])
-  | (?P<op>[A-Za-z'"*]+)
-""", re.VERBOSE)
+  | (?P<op>""" + _OPS + r""")
+""").encode(), re.VERBOSE)
 
 # which operand slots of each path operator carry a y coordinate
 Y_SLOTS = {"m": (1,), "l": (1,), "c": (1, 3, 5), "v": (1, 3), "y": (1, 3),
@@ -49,13 +53,14 @@ def apply(m, x, y):
 class Element:
     """Drawing done inside one innermost q...Q, in PDF user space."""
     __slots__ = ("inject_at", "qstart", "qend", "ctm", "ctm0", "kind",
-                 "pts", "glyphs", "lw", "ops", "bt", "et")
+                 "pts", "glyphs", "lw", "ops", "bt", "et", "standalone")
 
     def __init__(self, inject_at, ctm):
         self.inject_at = inject_at
         self.qstart = inject_at - 1   # the 'q' itself
         self.qend = None              # just after the matching 'Q'
         self.bt = self.et = None      # byte range of the BT...ET run, if any
+        self.standalone = False       # text drawn outside any q...Q
         self.ctm = ctm
         self.ctm0 = ctm      # CTM at the 'q', before this block's own cm
         self.kind = None
@@ -96,6 +101,7 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0)):
     tm = None
     font = None
     sub = -1
+    standalone = False
     pend = []                         # path ops awaiting a paint operator
 
     for i, (kind, text, s, e) in enumerate(toks):
@@ -129,11 +135,24 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0)):
                     font = toks[j][1].decode("latin-1")
                     break
         elif op == "BT":
-            if cur is not None:
-                cur.bt = s
+            if cur is None:
+                # Text is not required to sit inside q...Q; plenty of writers
+                # emit it at the top level. Treat the BT run itself as the
+                # element so those glyphs are not silently dropped.
+                cur = Element(s, ctm)
+                cur.qstart = s
+                cur.standalone = True
+                standalone = True
+            cur.bt = s
         elif op == "ET":
             if cur is not None:
                 cur.et = e
+                if standalone:
+                    cur.qend = e
+                    if cur.kind:
+                        elements.append(cur)
+                    cur = None
+                    standalone = False
         elif op == "Tm" and len(vals) >= 6:
             tm = tuple(vals[-6:])
         elif op in ("Td", "TD") and len(vals) >= 2 and tm is not None:
@@ -144,6 +163,13 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0)):
             if i and toks[i - 1][0] == "hexstr":
                 h = toks[i - 1][1][1:-1].replace(b" ", b"")
                 cid = int(h, 16) if h else None
+            elif i and toks[i - 1][0] == "str":
+                # simple fonts show a literal string; the byte is the code
+                body = toks[i - 1][1][1:-1]
+                body = re.sub(rb"\\([0-7]{1,3})",
+                              lambda m: bytes([int(m.group(1), 8) & 0xFF]), body)
+                body = re.sub(rb"\\(.)", rb"\1", body)
+                cid = body[0] if body else None
             cur.kind = cur.kind or "text"
             cur.glyphs.append((x, y, font, cid))
             cur.pts.append((x, y))

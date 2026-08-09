@@ -139,9 +139,13 @@ def find_full_font(embedded_name):
     short.
     """
     stem = embedded_name.split("+")[-1]
+    # Sibelius names the embedded subset without the "Std" the installed file
+    # carries (Inkpen2Chords vs Inkpen2ChordsStd.otf), so try both spellings.
+    names = [stem, stem + "Std", stem.replace("Std", "")]
     for d in FONT_DIRS:
-        for ext in ("otf", "ttf", "OTF", "TTF"):
-            hit = os.path.join(d, f"{stem}.{ext}")
-            if os.path.exists(hit):
-                return hit
+        for nm in names:
+            for ext in ("otf", "ttf", "OTF", "TTF"):
+                hit = os.path.join(d, f"{nm}.{ext}")
+                if os.path.exists(hit):
+                    return hit
     return None

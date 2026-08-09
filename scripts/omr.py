@@ -1,11 +1,14 @@
 """Extract notes + chords from Sibelius-exported PDF sheet music (text layer, no OMR)."""
 import fitz, sys, json
 
-NOTEHEADS = {'œ', 'ú', 'w', 'h', 'q', 'e', 'x'}  # notehead-bearing glyphs
+# Notehead glyphs across the Sibelius font variants. 'I'/'\u00cf' appear in the
+# PUA-encoded exports; the rest are the ASCII-remapped ones.
+NOTEHEADS = {'\u0153', 'w', 'h', 'q', 'e', 'x', '\u00cf', '\u02d9'}
 
 # Sibelius ships several music-font families (Opus, Inkpen2, Reprise, ...).
 # They share the same ASCII remapping, so match the family suffix, not a name.
-MUSIC_FONT = ("Std", "MT", "Opus", "Inkpen", "Reprise", "Maestro", "Petrucci")
+MUSIC_FONT = ("Std", "MT", "Opus", "Inkpen", "Reprise", "Maestro",
+              "Petrucci", "Sonata", "Jazz")
 
 
 def is_music_font(f):
@@ -14,6 +17,18 @@ def is_music_font(f):
 
 def is_chord_font(f):
     return "Chords" in f
+
+
+def norm_glyph(ch):
+    """Normalise a music-font character to its ASCII-remapped form.
+
+    Sibelius exports the same fonts two ways: either the ASCII remapping
+    directly, or the Private Use Area equivalent (U+F000 + the ASCII code).
+    Folding the PUA range onto ASCII lets one glyph table serve both.
+    """
+    o = ord(ch)
+    return chr(o - 0xF000) if 0xF000 <= o <= 0xF0FF else ch
+
 STEPS = "CDEFGAB"
 
 
@@ -90,7 +105,7 @@ def run(path):
             for g in band:
                 if not is_music_font(g["f"]) or is_chord_font(g["f"]):
                     continue
-                if g["c"] not in NOTEHEADS:
+                if norm_glyph(g["c"]) not in NOTEHEADS:
                     continue
                 pos = (g["y"] - top) / half
                 if abs(pos - round(pos)) > 0.28:      # off the staff grid
@@ -101,7 +116,7 @@ def run(path):
             # Rhythm-slash bars ("play the chord") carry no noteheads; the
             # slashes are beat positions and are what chords anchor to.
             slashes = [g for g in band
-                       if "Special" in g["f"] and g["c"] == "V"]
+                       if "Special" in g["f"] and norm_glyph(g["c"]) == "V"]
             chords = [g for g in band if is_chord_font(g["f"]) and g["y"] < y0]
             systems.append({"page": pno + 1, "staff": si, "st": st,
                             "notes": sorted(notes, key=lambda g: g["x"]),
