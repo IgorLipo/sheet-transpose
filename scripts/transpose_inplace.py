@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+"""Transpose a sheet-music PDF in place, preserving the original page exactly.
+
+Only three things change: noteheads (and everything attached to them) move
+vertically by the transposition's diatonic step count, the key signature is
+redrawn, and chord symbols are rewritten. Staff lines, barlines, clefs, rests,
+slash bars, repeats, rehearsal marks and every text instruction are untouched
+because their bytes are never edited.
+
+    transpose_inplace.py IN.pdf --from Dm --to Cm -o OUT.pdf
+"""
+import argparse, os, re, sys, math, collections
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pymupdf
+from pdfsurgery import parse, edit, Y_SLOTS, X_SLOTS
+from keysig import positions, clone
+import chords as CH
+from omr import staves
+
+STEPS = "CDEFGAB"
+SEMI = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+SIG = {"C": 0, "G": 1, "D": 2, "A": 3, "E": 4, "B": 5, "F#": 6, "C#": 7,
+       "F": -1, "Bb": -2, "Eb": -3, "Ab": -4, "Db": -5, "Gb": -6, "Cb": -7}
+ORDER = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+
+# Sibelius music fonts remap ASCII; these are the glyphs that ride with a note.
+NOTEHEADS = set("wœ˙œú")     # whole, quarter/eighth, half
+ARTICULATIONS = set("^.>-_")                # accent, staccato, tenuto
+ACCIDENTALS = {"b": -1, "#": 1, "♭": -1, "♯": 1}
+
+
+def parse_key(name):
+    m = re.fullmatch(r"([A-G])([b#]?)(m|min|minor)?", name.strip())
+    if not m:
+        raise SystemExit(f"bad key {name!r}")
+    root, acc, minor = m.group(1), m.group(2), bool(m.group(3))
+    pc = (SEMI[root] + (1 if acc == "#" else -1 if acc == "b" else 0)) % 12
+    maj = ORDER[(pc + 3) % 12] if minor else ORDER[pc]
+    return pc, minor, SIG.get(maj, 0), root + acc
+
+
+def diatonic_shift(src, dst):
+    """Steps to move on the staff (negative = down) and semitone delta."""
+    s_pc, _, s_sig, s_root = parse_key(src)
+    d_pc, _, d_sig, d_root = parse_key(dst)
+    semis = (d_pc - s_pc) % 12
+    if semis > 6:
+        semis -= 12
+    steps = (STEPS.index(d_root[0]) - STEPS.index(s_root[0])) % 7
+    if steps > 3:
+        steps -= 7
+    return steps, semis, s_sig, d_sig
+
+
+def staff_geom(page):
+    sts = staves(page)
+    out = []
+    for st in sts:
+        top = st[0][0]
+        half = (st[4][0] - top) / 8.0
+        out.append({"lines": [l[0] for l in st], "top": top, "half": half,
+                    "x0": st[0][1], "x1": st[0][2],
+                    "bot": st[4][0]})
+    return out
+
+
+def glyph_map(page):
+    """(x, y) -> (char, font) for every drawn glyph, in page coordinates."""
+    g = {}
+    for b in page.get_text("rawdict")["blocks"]:
+        for l in b.get("lines", []):
+            for s in l["spans"]:
+                for c in s["chars"]:
+                    if c["c"] == " ":
+                        continue
+                    g[(round(c["origin"][0], 1), round(c["origin"][1], 1))] = (
+                        c["c"], s["font"].split("+")[-1], c["bbox"])
+    return g
+
+
+def first_note_x(page, gm, geom):
+    """Left edge of real music on each staff (past clef + key signature)."""
+    out = []
+    for st in geom:
+        xs = [x for (x, y), (ch, fn, bb) in gm.items()
+              if ch in NOTEHEADS and abs(y - (st["top"] + st["bot"]) / 2) < 40]
+        out.append(min(xs) if xs else st["x0"] + 60)
+    return out
+
+
+def classify_glyph(ch, font, x, y, geom, notex):
+    """True if this glyph rides with the notes."""
+    if "Inkpen2Std" not in font and "Opus" not in font and "Std" not in font:
+        return False
+    if "Chords" in font or "Script" in font or "Text" in font:
+        return False
+    if ch in NOTEHEADS or ch in ARTICULATIONS:
+        return True
+    if ch in ACCIDENTALS:
+        # A key-signature accidental sits far left of the first note; one that
+        # belongs to a note hugs it. Only the latter rides with the music.
+        for st, nx in zip(geom, notex):
+            if abs(y - (st["top"] + st["bot"]) / 2) < 40:
+                return x >= nx - 12
+    return False
+
+
+def keysig_edits(data, els, gm, geom, notex, H, dst_sig, half):
+    """Add or remove key-signature accidentals so the staff shows `dst_sig`."""
+    ins, blanks, warn = [], {}, []
+    spacing = 2.258 * half                      # authentic Sibelius spacing
+    for st, nx in zip(geom, notex):
+        mid = (st["top"] + st["bot"]) / 2
+        acc = []
+        for e in els:
+            if e.kind != "text" or len(e.glyphs) != 1:
+                continue
+            x, y = e.glyphs[0][0], H - e.glyphs[0][1]
+            ch, fn = gm.get((round(x, 1), round(y, 1)), ("?", "?", None))[:2]
+            if ch not in ACCIDENTALS or "Chords" in fn:
+                continue
+            if abs(y - mid) < 28 and x < nx - 12:
+                acc.append((x, y, e))
+        if not acc:
+            continue
+        acc.sort()
+        idx0 = round((acc[0][1] - st["top"]) / half)
+        bass = idx0 >= 6                        # first flat: treble 4, bass 6
+        want = positions(dst_sig, bass)
+        if len(acc) > 1:
+            spacing = acc[1][0] - acc[0][0]
+        if len(want) < len(acc):                # fewer accidentals: erase extras
+            for _, _, e in acc[len(want):]:
+                blanks[(e.qstart, e.qend)] = b" "
+            continue
+        lx, ly, le = acc[-1]
+        lidx = round((ly - st["top"]) / half)
+        for i in range(len(acc), len(want)):
+            dx = (i - (len(acc) - 1)) * spacing
+            dy_page = (want[i] - lidx) * half
+            ins.append((le.qstart, clone(data, le, dx, -dy_page)))
+        # A wider key signature needs room. Record how far the rest of the
+        # header (time signature, repeat sign) must move right to clear it.
+        endx = lx + (len(want) - len(acc)) * spacing + 5.3
+        hdr = [(gx, bb[2]) for (gx, gy), (c, f, bb) in gm.items()
+               if abs(gy - mid) < 28 and lx + 1 < gx < nx - 0.5]
+        nextx = min([g[0] for g in hdr], default=nx)
+        # How far the header can move before it would collide with the first
+        # note. Without this cap the repeat dots get pushed on top of the music.
+        right = max([g[1] for g in hdr], default=lx)
+        cap = max(0.0, nx - right - 1.0)
+        if endx + 1.0 > nextx:
+            warn.append((endx + 1.0 - nextx, lx, nx, mid, cap))
+    return ins, blanks, warn
+
+
+def header_shift(els, pops, gm, geom, notex, H, zones):
+    """Move header content (time signature, repeat sign) right to clear the
+    wider key signature.
+
+    Each system negotiates its own shift, capped so nothing is ever pushed on
+    top of the first note. Only the strip between the key signature and that
+    note moves, so note positions - and the whole layout - stay put.
+    """
+    edits = {}
+
+    def zone_dx(x, y):
+        """Shift for a point, or None if it is not header content."""
+        hits = [d for lx, nx, mid, d in zones
+                if abs(y - mid) < 34 and lx + 1 < x < nx - 0.5]
+        return min(hits) if hits else None
+
+    for e in els:
+        if e.kind != "text" or not e.glyphs:
+            continue
+        ds = [zone_dx(x, H - y) for x, y, _, _ in e.glyphs]
+        if any(d is None for d in ds):
+            continue
+        dx = min(ds)
+        d = e.ctm0[0]
+        if dx > 0 and abs(d) > 1e-9:
+            k = (e.inject_at, e.inject_at)
+            edits[k] = edits.get(k, b"") + b" 1 0 0 1 %.5f 0 cm " % (dx / d)
+    subs = collections.defaultdict(list)
+    for o in pops:
+        subs[o.sub].append(o)
+    for ops in subs.values():
+        pts = [p for o in ops for p in o.pts]
+        ds = [zone_dx(px, H - py) for px, py in pts]
+        if any(d is None for d in ds):
+            continue
+        dx = min(ds)
+        if dx <= 0:
+            continue
+        for o in ops:
+            d = o.ctm[0]
+            if abs(d) < 1e-9:
+                continue
+            for si in X_SLOTS.get(o.op, ()):
+                if si < len(o.slots):
+                    val, s0, s1 = o.slots[si]
+                    edits[(s0, s1)] = b"%.5f" % (val + dx / d)
+    return edits
+
+
+def subpath_kind(pts, painted, lw, geom, H):
+    """staffline | barline | stem | beam | ledger | curve"""
+    xs = [p[0] for p in pts]
+    ys = [H - p[1] for p in pts]
+    w, h = max(xs) - min(xs), max(ys) - min(ys)
+    ymid = (max(ys) + min(ys)) / 2
+    if painted in ("f", "f*", "F", "B", "B*"):
+        return "beam"
+    if h < 1.2:                                   # horizontal
+        for st in geom:
+            for ln in st["lines"]:
+                if abs(ymid - ln) < 0.8 and w > 60:
+                    return "staffline"
+        return "ledger" if w < 40 else "beam"
+    if w < 1.2:                                   # vertical
+        for st in geom:
+            if min(ys) <= st["top"] + 1 and max(ys) >= st["bot"] - 1:
+                return "barline"
+        return "stem"
+    return "curve"
+
+
+TD_RE = re.compile(rb"([-\d.]+)\s+([-\d.]+)\s+Td")
+
+
+def chord_edits(data, els, gm, H, steps, semis, flats):
+    """Retypeset every chord symbol in the transposed key."""
+    runs, items = [], []
+    for e in els:
+        if e.kind != "text" or not e.glyphs or e.bt is None:
+            continue
+        chars, ok = [], True
+        for x, y, f, cid in e.glyphs:
+            g = gm.get((round(x, 1), round(H - y, 1)))
+            if g is None or "Chords" not in g[1]:
+                ok = False
+                break
+            chars.append(g[0])
+        if not ok or not chars:
+            continue
+        bt = data[e.bt:e.et]
+        tds = [float(m.group(1)) for m in TD_RE.finditer(bt)]
+        # each Td after the first is the advance of the glyph before it
+        deltas = (tds[1:] + [None])[:len(chars)]
+        runs.append((chars, [g[3] for g in e.glyphs], deltas))
+        fn = gm.get((round(e.glyphs[0][0], 1),
+                     round(H - e.glyphs[0][1], 1)))[1]
+        items.append((e, "".join(chars), fn))
+    if not items:
+        return {}, 0
+    cid, width = CH.learn(runs)
+    fallback = sorted(width.values())[len(width) // 2] if width else 0
+    # horizontal room before the next chord symbol on the same line
+    pos = sorted((round(H - e.glyphs[0][1], 1), e.glyphs[0][0], i)
+                 for i, (e, _, _f) in enumerate(items))
+    room = {}
+    for k, (y, x, i) in enumerate(pos):
+        nxt = next((px for py, px, _ in pos[k + 1:] if abs(py - y) < 2), None)
+        room[i] = (nxt - x - 1.5) if nxt else 1e9
+    edits, n, missed, redraw = {}, 0, [], []
+    for i, (e, text, fontname) in enumerate(items):
+        new = "".join(CH.transpose_glyphs(list(text), steps, semis))
+        if new == text:
+            continue
+        sq = 1.0
+        sc = abs(e.ctm[0]) or 1.0
+        nat = CH.natural_width(new, width, fallback)
+        avail = room.get(i, 1e9) / sc
+        if nat > avail > 0:
+            sq = max(0.78, avail / nat)
+        rep = CH.rebuild(data[e.bt:e.et], new, cid, width, fallback, sq)
+        if rep is not None:
+            edits[(e.bt, e.et)] = rep
+            n += 1
+        else:
+            # The embedded font is subsetted and lacks a letter we now need.
+            # Blank the old symbol and redraw it with the full installed face.
+            full = CH.find_full_font(fontname)
+            if full:
+                size = float(CH.HEAD.search(data[e.bt:e.et]).group(2))
+                redraw.append({"x": e.glyphs[0][0],
+                               "y": H - e.glyphs[0][1],
+                               "text": new,
+                               "size": size * abs(e.ctm[0]),
+                               "font": full})
+                edits[(e.bt, e.et)] = b" "
+                n += 1
+            else:
+                missed.append("".join(new))
+    return edits, n, sorted(set(missed)), redraw
+
+
+def ledger_edits(subs, gm, geom, H, steps, half):
+    """Recompute ledger lines instead of translating them.
+
+    Ledger lines only exist at line positions (even staff indices outside the
+    staff), so moving them by one diatonic step would land them in a space.
+    Each note's stack is rebuilt from the note's new position and any surplus
+    line is collapsed to zero length.
+    """
+    edits = {}
+    notes = [(x, y) for (x, y), (ch, fn, bb) in gm.items()
+             if ch in NOTEHEADS and "Chords" not in fn]
+    for ops in subs.values():
+        pts = [p for o in ops for p in o.pts]
+        xs = [p[0] for p in pts]
+        ys = [H - p[1] for p in pts]
+        if max(ys) - min(ys) > 1.2 or max(xs) - min(xs) > 40:
+            continue
+        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+        st = min(geom, key=lambda g: abs((g["top"] + g["bot"]) / 2 - cy))
+        idx = round((cy - st["top"]) / half)
+        if 0 <= idx <= 8:
+            continue                      # inside the staff: not a ledger
+        near = [n for n in notes if abs(n[0] - cx) < 9
+                and abs(n[1] - (st["top"] + st["bot"]) / 2) < 60]
+        if not near:
+            continue
+        # after the shift, which line slots does this note still need?
+        tgt = []
+        for _, ny in near:
+            nidx = round((ny - st["top"]) / half) - steps
+            if nidx <= -2:
+                tgt += list(range(-2, nidx - 1, -2))
+            if nidx >= 10:
+                tgt += list(range(10, nidx + 1, 2))
+        tgt = sorted(set(tgt), key=abs)
+        want = [t for t in tgt if (t < 0) == (idx < 0)]
+        # keep this line only if its rank still exists in the new stack
+        rank = abs(idx) // 2 - (1 if idx < 0 else 5)
+        rank = max(0, (abs(idx + 2) // 2) if idx < 0 else (idx - 10) // 2)
+        newidx = want[rank] if rank < len(want) else None
+        anchor = ops[0].slots[0][0]       # x of this subpath's 'm'
+        for o in ops:
+            d = o.ctm[3]
+            if abs(d) < 1e-9:
+                continue
+            if newidx is None:
+                # No longer needed: collapse every point onto the start x so the
+                # butt-capped stroke has zero length and paints nothing.
+                for si in X_SLOTS.get(o.op, ()):
+                    if si < len(o.slots):
+                        val, s0, s1 = o.slots[si]
+                        edits[(s0, s1)] = b"%.5f" % anchor
+                continue
+            dy_page = (newidx - idx) * half
+            for si in Y_SLOTS.get(o.op, ()):
+                if si < len(o.slots):
+                    val, s0, s1 = o.slots[si]
+                    edits[(s0, s1)] = b"%.5f" % (val + (-dy_page) / d)
+    return edits
+
+
+def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
+    H = page.rect.height
+    data = page.read_contents()
+    els, pops = parse(data)
+    geom = staff_geom(page)
+    if not geom:
+        return None, {}, []
+    gm = glyph_map(page)
+    notex = first_note_x(page, gm, geom)
+    half = geom[0]["half"]
+    dy_page = -steps * half          # steps<0 (down) -> positive page dy
+    dy_user = -dy_page               # PDF user space has y up
+
+    edits = {}
+    stats = collections.Counter()
+
+    # ---- glyphs: shift whole q-blocks that draw a moving glyph
+    for e in els:
+        if e.kind != "text" or not e.glyphs:
+            continue
+        move = all(classify_glyph(*gm.get((round(x, 1), round(H - y, 1)),
+                                          ("?", "?", None))[:2], x, H - y,
+                                  geom, notex)
+                   for x, y, _, _ in e.glyphs)
+        if not move:
+            continue
+        d = e.ctm0[3]
+        if abs(d) < 1e-9:
+            continue
+        edits[(e.inject_at, e.inject_at)] = b" 1 0 0 1 0 %.5f cm " % (dy_user / d)
+        stats["glyph"] += len(e.glyphs)
+
+    # ---- paths: rewrite the y operand of moving subpaths
+    subs = collections.defaultdict(list)
+    for o in pops:
+        subs[o.sub].append(o)
+    for sid, ops in subs.items():
+        pts = [p for o in ops for p in o.pts]
+        painted = ops[-1].painted
+        kind = subpath_kind(pts, painted, ops[0].lw, geom, H)
+        stats["path_" + kind] += 1
+        if kind in ("staffline", "barline", "ledger"):
+            continue
+        for o in ops:
+            d = o.ctm[3]
+            if abs(d) < 1e-9:
+                continue
+            for si in Y_SLOTS.get(o.op, ()):
+                if si >= len(o.slots):
+                    continue
+                val, s0, s1 = o.slots[si]
+                edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
+    edits.update(ledger_edits(subs, gm, geom, H, steps, half))
+
+    ce, ncho, miss, redraw = chord_edits(data, els, gm, H, steps, semis,
+                                         dst_sig <= 0)
+    edits.update(ce)
+    stats["chords"] = ncho
+    if miss:
+        stats["chords_unavailable"] = ",".join(miss)
+
+    if src_sig != dst_sig:
+        ins, blanks, warn = keysig_edits(data, els, gm, geom, notex, H,
+                                         dst_sig, half)
+        edits.update(blanks)
+        for off, payload in ins:
+            key = (off, off)
+            edits[key] = edits.get(key, b"") + payload
+            stats["keysig_added"] += 1
+        stats["keysig_removed"] += len(blanks)
+        if warn:
+            # one shift for the whole page keeps systems aligned with each other
+            zones = [(w[1], w[2], w[3], min(w[0], w[4])) for w in warn]
+            dx = max(z[3] for z in zones)
+            hs = header_shift(els, pops, gm, geom, notex, H, zones)
+            for k, v in hs.items():
+                edits[k] = edits.get(k, b"") + v if k[0] == k[1] else v
+            stats["header_shift"] = round(dx, 2)
+
+    if verbose:
+        print("   ", dict(stats))
+    return edit(data, edits), stats, redraw
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("pdf")
+    ap.add_argument("--from", dest="src", required=True)
+    ap.add_argument("--to", dest="dst", required=True)
+    ap.add_argument("-o", "--out")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    a = ap.parse_args()
+
+    steps, semis, s_sig, d_sig = diatonic_shift(a.src, a.dst)
+    out = a.out or re.sub(r"\.pdf$", "", a.pdf) + f"-{a.dst}.pdf"
+    print(f"{a.src} -> {a.dst}: {semis:+d} semitones = {steps:+d} diatonic steps"
+          f"   key sig {s_sig} -> {d_sig}")
+
+    doc = pymupdf.open(a.pdf)
+    for i, page in enumerate(doc):
+        new, st, redraw = transpose_page(page, steps, s_sig, d_sig, semis,
+                                         a.verbose)
+        if new is None:
+            print(f"  page {i+1}: no staves found, left unchanged")
+            continue
+        # Replace the page's content stream. read_contents() concatenates all
+        # streams, so the rewritten result goes into the first and the rest are
+        # emptied to avoid drawing anything twice.
+        xrefs = page.get_contents()
+        doc.update_stream(xrefs[0], new)
+        for extra in xrefs[1:]:
+            doc.update_stream(extra, b" ")
+        for r in redraw:
+            page.insert_text((r["x"], r["y"]), r["text"], fontsize=r["size"],
+                             fontfile=r["font"],
+                             fontname="cf" + str(abs(hash(r["font"])) % 9999))
+        print(f"  page {i+1}: moved {st['glyph']} glyphs, "
+              f"{sum(v for k, v in st.items() if k.startswith('path_') and k not in ('path_staffline','path_barline'))} subpaths")
+    doc.save(out, garbage=0, deflate=True, clean=False)
+    print("->", out)
+
+
+if __name__ == "__main__":
+    main()
