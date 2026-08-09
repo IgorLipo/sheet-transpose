@@ -17,7 +17,6 @@ for d in (LIB, OUT):
     d.mkdir(exist_ok=True)
 DB = ROOT / "charts.db"
 PY = str(ROOT / "venv" / "bin" / "python")
-TRANSPOSE = str(ROOT / "transpose_inplace.py")
 
 KEYS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
 
@@ -35,9 +34,8 @@ def db():
 # ----------------------------------------------------------------- detection
 def detect(pdf_path):
     """Read the source key signature and title straight from the PDF."""
-    sys.path.insert(0, str(ROOT))
     import pymupdf
-    from transpose_inplace import detect_source_key
+    from sheet_transpose.transpose_inplace import detect_source_key
     info = {"key": None, "sig": None, "pages": 0, "title": None}
     try:
         doc = pymupdf.open(pdf_path)
@@ -84,7 +82,7 @@ async def transpose(token: str = Form(None), chart_id: str = Form(None),
         raise HTTPException(404, "source not found")
     stem = re.sub(r"[^\w\- ]", "", (title or srcpdf.stem))[:60] or "chart"
     outpdf = OUT / f"{stem} [{dst}] {uuid.uuid4().hex[:6]}.pdf"
-    r = subprocess.run([PY, TRANSPOSE, str(srcpdf), "--from", src,
+    r = subprocess.run([PY, "-m", "sheet_transpose", str(srcpdf), "--from", src,
                         "--to", dst, "-o", str(outpdf), "-v"],
                        capture_output=True, text=True, cwd=str(ROOT))
     log = (r.stdout + r.stderr)

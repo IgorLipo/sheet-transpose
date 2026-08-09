@@ -16,7 +16,7 @@ import pymupdf
 from pdfsurgery import parse, edit, Y_SLOTS, X_SLOTS
 from keysig import positions, clone
 import chords as CH
-from omr import staves
+from omr import staves, run, is_music_font, is_chord_font
 
 STEPS = "CDEFGAB"
 SEMI = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
@@ -51,6 +51,34 @@ def diatonic_shift(src, dst):
     if steps > 3:
         steps -= 7
     return steps, semis, s_sig, d_sig
+
+
+def detect_source_key(pdf):
+    """Read the key signature from the engraved staff: count flat/sharp glyphs
+    between the clef and the time signature on the first system."""
+    doc = pymupdf.open(pdf)
+    page = doc[0]
+    sysl = run(pdf)
+    if not sysl:
+        raise SystemExit("no staves found")
+    st = sysl[0]["st"]
+    y0, y1 = st[0][0], st[4][0]
+    flats = sharps = 0
+    for b in page.get_text("rawdict")["blocks"]:
+        for l in b.get("lines", []):
+            for s in l["spans"]:
+                if not is_music_font(s["font"]) or is_chord_font(s["font"]):
+                    continue
+                for c in s["chars"]:
+                    if not (y0 - 12 < c["origin"][1] < y1 + 12):
+                        continue
+                    if c["origin"][0] > st[0][1] + 60:   # past the key sig
+                        continue
+                    if c["c"] == "b":
+                        flats += 1
+                    elif c["c"] == "#":
+                        sharps += 1
+    return -flats if flats else sharps
 
 
 def staff_geom(page):

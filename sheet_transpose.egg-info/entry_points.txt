@@ -1,0 +1,2 @@
+[console_scripts]
+sheet-transpose = sheet_transpose.__main__:main

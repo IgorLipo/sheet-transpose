@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#07070A">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Transpose</title>
+<style>
+:root{
+  --bg:#07070A;
+  --ink:#F2F3F7;
+  --dim:rgba(242,243,247,.55);
+  --faint:rgba(242,243,247,.30);
+  --stroke:rgba(255,255,255,.10);
+  --stroke-hi:rgba(255,255,255,.20);
+  --fill:rgba(255,255,255,.055);
+  --fill-hi:rgba(255,255,255,.10);
+  --accent:#5E9BFF;
+  --accent-2:#9C6BFF;
+  --good:#33D69F;
+  --warn:#FFB020;
+  --r:22px;
+  --safe-b:env(safe-area-inset-bottom,0px);
+  --safe-t:env(safe-area-inset-top,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{background:var(--bg)}
+html,body{margin:0;min-height:100%}
+body{
+  background:transparent;color:var(--ink);
+  font:400 17px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",Inter,system-ui,sans-serif;
+  letter-spacing:-.01em;
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+/* ambient light behind the glass */
+body::before{
+  content:"";position:fixed;inset:-25% -25% auto -25%;height:70vh;z-index:0;
+  background:
+    radial-gradient(45% 42% at 22% 12%,rgba(94,155,255,.30),transparent 70%),
+    radial-gradient(42% 40% at 82% 4%,rgba(156,107,255,.26),transparent 70%),
+    radial-gradient(40% 38% at 60% 42%,rgba(51,214,159,.12),transparent 70%);
+  filter:blur(10px);pointer-events:none;opacity:.85;
+  animation:drift 24s ease-in-out infinite alternate;
+}
+@keyframes drift{to{transform:translate3d(0,4%,0) scale(1.08)}}
+
+.wrap{position:relative;z-index:1;max-width:560px;margin:0 auto;
+  padding:calc(var(--safe-t) + 18px) 18px calc(var(--safe-b) + 132px)}
+
+/* ---- glass ---- */
+.glass{
+  background:linear-gradient(180deg,rgba(255,255,255,.085),rgba(255,255,255,.04));
+  border:1px solid var(--stroke);
+  border-radius:var(--r);
+  backdrop-filter:blur(28px) saturate(180%);
+  -webkit-backdrop-filter:blur(28px) saturate(180%);
+  box-shadow:0 1px 0 rgba(255,255,255,.10) inset,0 18px 44px rgba(0,0,0,.44);
+}
+
+header{display:flex;align-items:center;gap:11px;margin:2px 4px 20px}
+.logo{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;
+  background:linear-gradient(150deg,var(--accent),var(--accent-2));
+  box-shadow:0 6px 18px rgba(94,155,255,.42);font-size:19px}
+h1{font:600 21px/1 "SF Pro Display",-apple-system,sans-serif;margin:0;letter-spacing:-.02em}
+.sub{font-size:12.5px;color:var(--faint);margin-top:3px;letter-spacing:.01em}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--good);
+  box-shadow:0 0 9px var(--good);margin-left:auto;flex:none;transition:.3s}
+.dot.off{background:#FF4D4D;box-shadow:0 0 9px #FF4D4D}
+
+/* ---- drop zone ---- */
+.drop{padding:34px 20px;text-align:center;cursor:pointer;position:relative;overflow:hidden;
+  transition:transform .32s cubic-bezier(.34,1.56,.64,1),border-color .25s,background .25s}
+.drop:active{transform:scale(.985)}
+.drop.over{border-color:var(--accent);background:rgba(94,155,255,.10)}
+.drop .ic{opacity:.92;color:var(--accent)}
+.drop .t{font-weight:590;margin-top:11px;font-size:16.5px}
+.drop .s{color:var(--faint);font-size:13px;margin-top:4px}
+input[type=file]{display:none}
+
+/* ---- chart card ---- */
+.card{padding:17px 18px;margin-top:14px;display:none;animation:rise .5s cubic-bezier(.16,1,.3,1)}
+.card.on{display:block}
+@keyframes rise{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
+.title{font:600 18px/1.25 "SF Pro Display",-apple-system,sans-serif;letter-spacing:-.02em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta{color:var(--faint);font-size:12.5px;margin-top:4px}
+
+/* ---- key pills ---- */
+.row{display:flex;align-items:center;gap:12px;margin-top:16px}
+.keybox{flex:1;text-align:center;padding:13px 8px;border-radius:15px;
+  background:var(--fill);border:1px solid var(--stroke)}
+.keybox .l{font-size:10.5px;letter-spacing:.10em;text-transform:uppercase;color:var(--faint)}
+.keybox .v{font:600 25px/1.1 "SF Pro Display",-apple-system,sans-serif;margin-top:3px;letter-spacing:-.02em}
+.keybox.to .v{color:var(--accent)}
+.arrow{color:var(--faint);font-size:19px;flex:none}
+
+.lbl{font-size:11px;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);
+  margin:22px 4px 10px}
+
+/* ---- key grid ---- */
+.keys{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.k{position:relative;padding:13px 2px 15px;border-radius:14px;text-align:center;cursor:pointer;
+  background:var(--fill);border:1px solid var(--stroke);
+  font:590 16px/1 "SF Pro Display",-apple-system,sans-serif;letter-spacing:-.01em;
+  transition:transform .26s cubic-bezier(.34,1.56,.64,1),background .2s,border-color .2s,color .2s}
+.k:active{transform:scale(.93)}
+.k.sel{background:linear-gradient(160deg,var(--accent),var(--accent-2));
+  border-color:transparent;color:#fff;box-shadow:0 8px 22px rgba(94,155,255,.42)}
+.k.src{border-color:var(--stroke-hi);color:var(--dim)}
+.k.src{background:rgba(255,255,255,.02);color:var(--faint)}
+.k.src::after{content:"NOW";position:absolute;left:0;right:0;bottom:3px;
+  font:600 7.5px/1 -apple-system,sans-serif;letter-spacing:.14em;color:var(--faint)}
+
+/* ---- semitone stepper ---- */
+.step{display:flex;align-items:center;gap:2px;padding:6px;border-radius:16px;
+  background:var(--fill);border:1px solid var(--stroke);margin-top:10px}
+.step button{flex:none;width:46px;height:44px;border:0;border-radius:12px;background:transparent;
+  color:var(--ink);font:600 19px/1 -apple-system,sans-serif;cursor:pointer;
+  transition:background .18s,transform .2s}
+.step button:active{transform:scale(.9);background:var(--fill-hi)}
+.step .val{flex:1;text-align:center;font:590 14.5px/1 "SF Pro Text",-apple-system,sans-serif;color:var(--dim)}
+
+/* ---- primary action ---- */
+.go{position:fixed;left:0;right:0;bottom:0;z-index:5;
+  padding:14px 18px calc(var(--safe-b) + 14px);
+  background:linear-gradient(180deg,transparent,rgba(7,7,10,.86) 34%);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.go .btn{max-width:524px;margin:0 auto;display:flex;align-items:center;justify-content:center;gap:9px;
+  height:56px;border-radius:17px;border:0;width:100%;cursor:pointer;
+  background:linear-gradient(160deg,var(--accent),var(--accent-2));color:#fff;
+  font:600 17.5px/1 "SF Pro Display",-apple-system,sans-serif;letter-spacing:-.01em;
+  box-shadow:0 10px 30px rgba(94,155,255,.42);
+  transition:transform .26s cubic-bezier(.34,1.56,.64,1),opacity .2s,filter .2s}
+.go .btn:active{transform:scale(.975)}
+.go .btn[disabled]{opacity:.34;filter:saturate(.35);box-shadow:none;cursor:default}
+.spin{width:17px;height:17px;border:2.2px solid rgba(255,255,255,.32);border-top-color:#fff;
+  border-radius:50%;animation:sp .75s linear infinite;display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.busy .spin{display:block}
+
+/* ---- result ---- */
+.res{padding:19px;margin-top:14px;display:none;text-align:center;
+  animation:rise .5s cubic-bezier(.16,1,.3,1)}
+.res.on{display:block}
+body.done .go .btn{height:48px;font-size:16px;opacity:.9}
+.res .tick{width:52px;height:52px;border-radius:50%;margin:0 auto 12px;display:grid;place-items:center;
+  background:rgba(51,214,159,.15);border:1px solid rgba(51,214,159,.34);
+  color:var(--good);font-size:25px}
+.res .t{font:600 17.5px/1.3 "SF Pro Display",-apple-system,sans-serif}
+.res .s{color:var(--faint);font-size:13px;margin-top:5px}
+.acts{display:flex;gap:9px;margin-top:15px}
+.acts a,.acts button{flex:1;padding:14px;border-radius:14px;text-decoration:none;text-align:center;
+  border:1px solid var(--stroke);background:var(--fill);color:var(--ink);cursor:pointer;
+  font:590 15px/1 "SF Pro Text",-apple-system,sans-serif;transition:transform .24s,background .2s}
+.acts a:active,.acts button:active{transform:scale(.96);background:var(--fill-hi)}
+.acts .pri{background:linear-gradient(160deg,var(--accent),var(--accent-2));border-color:transparent;color:#fff}
+
+.note{margin-top:11px;padding:11px 13px;border-radius:13px;font-size:12.5px;line-height:1.45;
+  background:rgba(255,176,32,.11);border:1px solid rgba(255,176,32,.26);color:#FFD79A;text-align:left}
+.err{background:rgba(255,77,77,.11);border-color:rgba(255,77,77,.28);color:#FFB4B4}
+.hide{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">♭</div>
+    <div>
+      <h1>Transpose</h1>
+      <div class="sub">Any chart · any key</div>
+    </div>
+    <div class="dot" id="dot" title="server"></div>
+  </header>
+
+  <div class="glass drop" id="drop">
+    <input type="file" id="file" accept="application/pdf">
+    <svg class="ic" width="34" height="34" viewBox="0 0 24 24" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 15V3m0 0L8 7m4-4 4 4" opacity=".95"/>
+  <path d="M3 15v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4" opacity=".55"/>
+</svg>
+    <div class="t">Drop a chart</div>
+    <div class="s">PDF from Sibelius, Finale or MuseScore</div>
+  </div>
+
+  <div class="glass card" id="card">
+    <div class="title" id="ttl">—</div>
+    <div class="meta" id="meta">—</div>
+
+    <div class="row">
+      <div class="keybox"><div class="l">From</div><div class="v" id="kfrom">—</div></div>
+      <div class="arrow">→</div>
+      <div class="keybox to"><div class="l">To</div><div class="v" id="kto">—</div></div>
+    </div>
+
+    <div class="lbl">Target key</div>
+    <div class="keys" id="keys"></div>
+
+    <div class="step">
+      <button id="dn">−</button>
+      <div class="val" id="semi">same key</div>
+      <button id="up">+</button>
+    </div>
+  </div>
+
+  <div class="glass res" id="res">
+    <div class="tick">✓</div>
+    <div class="t" id="rt">Ready</div>
+    <div class="s" id="rs"></div>
+    <div class="acts">
+      <a class="pri" id="open" target="_blank" rel="noopener">Open</a>
+      <a id="save" download>Save</a>
+    </div>
+    <div class="note hide" id="warn"></div>
+  </div>
+
+  <div class="note err hide" id="err" style="margin-top:14px"></div>
+</div>
+
+<div class="go">
+  <button class="btn" id="go" disabled><span class="spin"></span><span id="golbl">Transpose</span></button>
+</div>
+
+<script>
+const NAMES=["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
+const $=id=>document.getElementById(id);
+let state={token:null,src:null,dst:null,minor:true,title:null};
+
+const tap=(ms=8)=>{try{navigator.vibrate&&navigator.vibrate(ms)}catch(e){}};
+
+function pc(k){const m=/^([A-G])([b#]?)/.exec(k);if(!m)return 0;
+  const base={C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1]];
+  return (base+(m[2]==="#"?1:m[2]==="b"?-1:0)+12)%12;}
+
+function keyName(p,minor){return NAMES[(p%12+12)%12]+(minor?"m":"");}
+
+function buildKeys(){
+  const g=$("keys");g.innerHTML="";
+  for(let i=0;i<12;i++){
+    const nm=keyName(i,state.minor);
+    const d=document.createElement("div");
+    d.className="k";d.textContent=nm;d.dataset.k=nm;
+    if(state.src&&pc(state.src)===i)d.classList.add("src");
+    if(state.dst&&pc(state.dst)===i)d.classList.add("sel");
+    d.onclick=()=>{tap();setDst(nm)};
+    g.appendChild(d);
+  }
+}
+function setDst(k){
+  state.dst=k;$("kto").textContent=k;
+  [...$("keys").children].forEach(c=>c.classList.toggle("sel",c.dataset.k===k));
+  const d=((pc(k)-pc(state.src))%12+12)%12, s=d>6?d-12:d;
+  $("semi").textContent = s===0?"same key":(s>0?"+":"")+s+" semitone"+(Math.abs(s)===1?"":"s");
+  $("go").disabled = !state.token || s===0;
+}
+function nudge(n){
+  if(!state.src)return;tap();
+  const cur=state.dst?pc(state.dst):pc(state.src);
+  setDst(keyName(cur+n,state.minor));
+}
+$("up").onclick=()=>nudge(1);
+$("dn").onclick=()=>nudge(-1);
+
+// ---------- upload ----------
+const drop=$("drop"),file=$("file");
+drop.onclick=()=>file.click();
+["dragenter","dragover"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add("over")}));
+["dragleave","drop"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove("over")}));
+drop.addEventListener("drop",ev=>{const f=ev.dataTransfer.files[0];if(f)send(f)});
+file.onchange=()=>{if(file.files[0])send(file.files[0])};
+
+function fail(m){$("err").textContent=m;$("err").classList.remove("hide")}
+function clearFail(){$("err").classList.add("hide")}
+
+async function send(f){
+  clearFail();$("res").classList.remove("on");document.body.classList.remove("done");
+  const fd=new FormData();fd.append("file",f);
+  drop.querySelector(".t").textContent="Reading…";
+  try{
+    const r=await fetch("/api/analyze",{method:"POST",body:fd});
+    if(!r.ok)throw new Error(await r.text());
+    const j=await r.json();
+    if(j.error)throw new Error(j.error);
+    state.token=j.token;state.src=j.key||"Am";state.minor=/m$/.test(state.src);
+    state.title=j.title||f.name.replace(/\.pdf$/i,"");
+    $("ttl").textContent=state.title;
+    $("meta").textContent=`${j.pages} page${j.pages===1?"":"s"} · key signature ${j.sig>0?j.sig+" sharp":j.sig<0?(-j.sig)+" flat":"none"}${Math.abs(j.sig)===1?"":"s"}`;
+    $("kfrom").textContent=state.src;
+    state.dst=null;$("kto").textContent="—";$("semi").textContent="pick a key";
+    buildKeys();$("card").classList.add("on");$("go").disabled=true;
+    drop.querySelector(".t").textContent="Drop a chart";
+    tap(12);
+  }catch(e){
+    drop.querySelector(".t").textContent="Drop a chart";
+    fail("Could not read that PDF. "+String(e.message||e).slice(0,140));
+  }
+}
+
+// ---------- transpose ----------
+$("go").onclick=async()=>{
+  if(!state.token||!state.dst)return;
+  clearFail();tap(14);
+  const b=$("go");b.disabled=true;b.classList.add("busy");$("golbl").textContent="Working…";
+  const fd=new FormData();
+  fd.append("token",state.token);fd.append("src",state.src);
+  fd.append("dst",state.dst);fd.append("title",state.title||"chart");
+  try{
+    const r=await fetch("/api/transpose",{method:"POST",body:fd});
+    if(!r.ok)throw new Error((await r.text()).slice(0,200));
+    const j=await r.json();
+    $("rt").textContent=`${state.src} → ${state.dst}`;
+    $("rs").textContent=j.name;
+    $("open").href=j.url;$("save").href=j.url;
+    $("save").setAttribute("download",j.name);
+    const w=$("warn");
+    if(j.warnings&&j.warnings.length){w.textContent=j.warnings.join(" · ");w.classList.remove("hide")}
+    else w.classList.add("hide");
+    $("res").classList.add("on");document.body.classList.add("done");
+    $("res").scrollIntoView({behavior:"smooth",block:"end"});
+    tap(18);
+  }catch(e){fail("Transpose failed. "+String(e.message||e))}
+  finally{b.classList.remove("busy");b.disabled=false;$("golbl").textContent="Transpose"}
+};
+
+// ---------- health ----------
+(async function ping(){
+  try{const r=await fetch("/api/health");$("dot").classList.toggle("off",!r.ok)}
+  catch(e){$("dot").classList.add("off")}
+  setTimeout(ping,20000);
+})();
+</script>
+</body>
+</html>

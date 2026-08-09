@@ -1,0 +1,11 @@
+pymupdf>=1.24
+
+[reengrave]
+music21
+verovio
+cairosvg
+
+[server]
+fastapi
+uvicorn[standard]
+python-multipart
