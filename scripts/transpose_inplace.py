@@ -1146,6 +1146,10 @@ def barlines(geom, pops, H, half, heads=()):
             # Strokes that merely reach across - a stem, or a bracket drawn
             # through a whole system - do not, and taking them as bar
             # boundaries resets accidental state in the middle of a bar.
+            # A barline covers its staff exactly, top line to bottom line.
+            # A stroke that crosses a bracketed system is not recognised
+            # here; accidental state then runs to the end of the system,
+            # which is safe - it never drops a sign the music needs.
             if not (abs(ylo - st["top"]) < 1.5
                     and abs(yhi - st["bot"]) < 1.5):
                 continue
@@ -1266,7 +1270,11 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
         step_o = STEPS[dia % 7]
         att = None
         for a in accs:
-            if not a["used"] and 0 < nx_ - a["x"] < 16 \
+            # A chord stacks its accidentals in columns to the left of the
+            # noteheads, so the outermost of three sits far further out than
+            # a single one. Scale the reach with the staff rather than fixing
+            # it in points, which only ever fits one engraving size.
+            if not a["used"] and 0 < nx_ - a["x"] < half * 9.0 \
                and abs(a["y"] - ny) < half * 0.9:
                 if att is None or a["x"] > att["x"]:
                     att = a
