@@ -64,6 +64,32 @@ translation spliced in; everything else keeps its original bytes.
 
 ---
 
+
+## Verifying a transposition
+
+Position checks are not enough. A note can move exactly one staff step and
+still sound wrong, because the printed pitch is staff position PLUS the key
+signature PLUS any accidental in force. Three real defects were only caught by
+checking sounding pitch:
+
+- a natural left behind while its note moved, so the note took the new key
+  signature instead (B natural came out as A flat, not A natural)
+- notes that text extraction does not report, silently left at the old pitch
+- on a grand staff, notes judged against the wrong staff and skipped
+
+Use the pitch checker, which reads each note's staff position, key signature
+and accidental, and pairs notes between the files by horizontal position:
+
+```bash
+SK=~/.claude/skills/sheet-transpose
+$SK/venv/bin/python tools/pitchcheck.py IN.pdf OUT.pdf <src_sig> <dst_sig> <semitones>
+# e.g. Dm (1 flat) -> Cm (3 flats), down a tone:
+$SK/venv/bin/python tools/pitchcheck.py chart.pdf chart-Cm.pdf -1 -3 -2
+```
+
+It must report `WRONG PITCH : 0`. Note counts can differ legitimately: some
+scores draw noteheads that text extraction never reports.
+
 ## Fallback: re-engraving (`transpose.py`)
 
 Rebuilds the score from scratch (melody + chords) when the source has no usable
