@@ -11,12 +11,22 @@ because their bytes are never edited.
 """
 import argparse, os, re, sys, math, collections
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pymupdf
-from pdfsurgery import parse, edit, Y_SLOTS, X_SLOTS
-from keysig import positions, clone
-import chords as CH
-from omr import staves, run, is_music_font, is_chord_font, norm_glyph
+try:                                    # package import (pip install)
+    from .pdfsurgery import parse, edit, mat_mul, Y_SLOTS, X_SLOTS
+    from .keysig import positions, clone
+    from . import chords as CH
+    from . import vector as VEC
+    from .omr import (staves, run, is_music_font, is_chord_font, norm_glyph,
+                      font_roles, set_font_roles)
+except ImportError:                     # flat directory (the Air deployment)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from pdfsurgery import parse, edit, mat_mul, Y_SLOTS, X_SLOTS
+    from keysig import positions, clone
+    import chords as CH
+    import vector as VEC
+    from omr import (staves, run, is_music_font, is_chord_font, norm_glyph,
+                     font_roles, set_font_roles)
 
 STEPS = "CDEFGAB"
 SEMI = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
@@ -64,6 +74,11 @@ def diatonic_shift(src, dst):
     return steps, semis, s_sig, d_sig
 
 
+def activate_roles(doc):
+    """Install content-based font roles for this document."""
+    set_font_roles(font_roles(doc))
+
+
 def detect_source_key(pdf):
     """Read the key signature by counting the accidentals in a staff header.
 
@@ -72,38 +87,47 @@ def detect_source_key(pdf):
     has a clef, and count the accidentals between it and the first note.
     """
     doc = pymupdf.open(pdf)
+    activate_roles(doc)
     for pno in range(doc.page_count):
         page = doc[pno]
-        for s in run(pdf) if pno == 0 else []:
-            pass
-        sysl = [x for x in run(pdf) if x["page"] == pno + 1]
-        for st_info in sysl:
-            st = st_info["st"]
-            y0, y1 = st[0][0], st[4][0]
-            mid = (y0 + y1) / 2
+        sts = staves(page)
+        if not sts:
+            continue
+        # The low-level trace sees every glyph; the ordinary extractor drops
+        # whole header runs on some exports and on this tool's own output.
+        glyphs = []
+        for sp in page.get_texttrace():
+            if sp.get("type") != 0:
+                continue
+            if not is_music_font(sp["font"]) or is_chord_font(sp["font"]):
+                continue
+            for ucs, _g, org, _b in sp["chars"]:
+                glyphs.append((org[0], org[1], norm_glyph(chr(ucs))))
+        for st in sts:
+            mid = (st[0][0] + st[4][0]) / 2
             clef_x = None
             acc = []
-            for b in page.get_text("rawdict")["blocks"]:
-                for l in b.get("lines", []):
-                    for sp in l["spans"]:
-                        if not is_music_font(sp["font"]) or is_chord_font(sp["font"]):
-                            continue
-                        for c in sp["chars"]:
-                            if abs(c["origin"][1] - mid) > 26:
-                                continue
-                            g = norm_glyph(c["c"])
-                            x = c["origin"][0]
-                            if g in ("&", "?") and (clef_x is None or x < clef_x):
-                                clef_x = x
-                            elif g in ("b", "#"):
-                                acc.append((x, g))
+            for x, y, g in glyphs:
+                if abs(y - mid) > 26:
+                    continue
+                if g in ("&", "?") and (clef_x is None or x < clef_x):
+                    clef_x = x
+                elif g in ("b", "#"):
+                    acc.append((x, g))
             if clef_x is None:
                 continue                      # continuation system: no header
-            # accidentals in the header sit just right of the clef
-            hdr = [g for x, g in acc if clef_x < x < clef_x + 90]
-            if not hdr:
+            # accidentals in the header sit just right of the clef, and the
+            # first inline accidental in the music must not count: stop at
+            # the first gap wider than a signature ever leaves.
+            hdr = sorted((x, g) for x, g in acc if clef_x < x < clef_x + 90)
+            run_ = []
+            for k, (x, g) in enumerate(hdr):
+                if k and x - run_[-1][0] > 9:
+                    break
+                run_.append((x, g))
+            if not run_:
                 return 0
-            return -len(hdr) if hdr[0] == "b" else len(hdr)
+            return -len(run_) if run_[0][1] == "b" else len(run_)
     return None                               # no header found anywhere
 
 
@@ -122,6 +146,7 @@ def key_from_chords(pdf):
     """
     import collections
     doc = pymupdf.open(pdf)
+    activate_roles(doc)
     roots = []
     for page in doc:
         for b in page.get_text("rawdict")["blocks"]:
@@ -184,6 +209,27 @@ def glyph_map(page):
                     g[(round(c["origin"][0], 1), round(c["origin"][1], 1))] = (
                         c["c"], s["font"].split("+")[-1], c["bbox"], s["size"])
     return g
+
+
+def align_glyphs(page, els, H):
+    """Snap every parsed glyph to the position the renderer actually drew.
+
+    The parser cannot know glyph advances, so within a TJ array or a
+    multi-character string it reports every glyph at the string's origin.
+    The text extractor's low-level trace enumerates glyphs in the same paint
+    order WITH their true origins, so when the counts agree, its positions are
+    authoritative.
+    """
+    trace = [org for sp in page.get_texttrace() if sp.get("type") == 0
+             for _u, _g, org, _b in sp["chars"]]
+    slots = [(e, gi) for e in els if e.kind == "text"
+             for gi in range(len(e.glyphs))]
+    if len(trace) != len(slots):
+        return False
+    for (e, gi), org in zip(slots, trace):
+        x, y, f, cid = e.glyphs[gi]
+        e.glyphs[gi] = (org[0], H - org[1], f, cid)
+    return True
 
 
 def merged_glyph_map(page, els, H, gm):
@@ -336,19 +382,21 @@ def keysig_plan(page, els, gm, geom, notex, H, dst_sig, half):
         mid = (st["top"] + st["bot"]) / 2
         acc = []
         for e in els:
-            if e.kind != "text" or len(e.glyphs) != 1:
+            if e.kind != "text" or not e.glyphs:
                 continue
-            x, y = e.glyphs[0][0], H - e.glyphs[0][1]
-            ch, fn, bb = gm.get((round(x, 1), round(y, 1)),
-                                ("?", "?", (0, 0, 0, 0), 0))[:3]
-            ch = norm_glyph(ch)
-            if ch not in ACCIDENTALS or not is_music_font(fn) \
-               or is_chord_font(fn):
-                continue
-            # A key-signature accidental sits in the staff header, immediately
-            # after the clef - not merely anywhere left of the first note.
-            if abs(y - mid) < 28 and x < nx - 12 and x < st["x0"] + 95:
-                acc.append((x, y, e, bb[2] - bb[0]))
+            for gi, (gx, gy, _f, _c) in enumerate(e.glyphs):
+                x, y = gx, H - gy
+                ch, fn, bb = gm.get((round(x, 1), round(y, 1)),
+                                    ("?", "?", (0, 0, 0, 0), 0))[:3]
+                ch = norm_glyph(ch)
+                # A key-signature accidental sits in the staff header,
+                # immediately after the clef - not anywhere left of the note.
+                # Glyphs are judged one by one: some exports batch the clef
+                # and the whole signature into a single text run.
+                if ch in ACCIDENTALS and is_music_font(fn) \
+                   and not is_chord_font(fn) and abs(y - mid) < 28 \
+                   and x < nx - 12 and x < st["x0"] + 95:
+                    acc.append((x, y, e, (bb[2] - bb[0]) or 5.0, ch, gi))
         if not acc:
             # Nothing to clone from and nothing to remove: this staff prints no
             # key signature (common on continuation systems and on charts that
@@ -386,36 +434,96 @@ def keysig_plan(page, els, gm, geom, notex, H, dst_sig, half):
             scale = min(scale, max(0.40, (room - GAP) /
                                    max(need - GAP, 1e-6)))
         plans.append({"st": st, "acc": acc, "want": want, "spacing": spacing,
-                      "lx": lx, "shift": shift, "nx": limit,
+                      "lx": lx, "shift": shift, "nx": limit, "bass": bass,
                       "lo": st["top"] - 2.5 * st["half"],
                       "hi": st["bot"] + 2.5 * st["half"]})
     return plans, scale
 
 
-def keysig_edits(data, plans, scale, half, H):
-    """Add, move or erase key-signature accidentals to match the plan."""
-    ins, blanks, zones = [], {}, []
+def accidental_donor(els, gm, H, glyph):
+    """A drawn accidental of the given kind, usable as a template.
+
+    A transposition that flips the sign of the key - E major's sharps to C
+    minor's flats - has nothing in the signature to clone, but the music
+    itself usually prints the needed glyph somewhere as an inline accidental.
+    Prefer the largest one: grace-note accidentals are drawn small.
+    """
+    best = None
+    for e in els:
+        if e.kind != "text" or len(e.glyphs) != 1:
+            continue
+        x, y = e.glyphs[0][0], H - e.glyphs[0][1]
+        g = gm.get((round(x, 1), round(y, 1)))
+        if not g or norm_glyph(g[0]) != glyph:
+            continue
+        if not is_music_font(g[1]) or is_chord_font(g[1]):
+            continue
+        size = g[3] if len(g) > 3 else 0
+        if best is None or size > best[0]:
+            best = (size, x, y, e,
+                    (g[2][2] - g[2][0]) if g[2] else 5.0)
+    return best and best[1:]
+
+
+def keysig_edits(data, plans, scale, half, H, dst_sig, donor=None):
+    """Add, move, erase or replace key-signature accidentals to match the plan.
+
+    When the transposition flips the sign of the key - sharps to flats or
+    back - nothing in the old signature can be cloned, so every accidental is
+    erased and the new ones are cloned from `donor`, an inline accidental of
+    the right kind found elsewhere in the music. Staves that cannot be served
+    either way are returned for drawing with an installed font.
+    """
+    ins, blanks, zones, undrawable = [], {}, [], []
+    want_glyph = "b" if dst_sig < 0 else "#"
+
+    def blank(a):
+        """Erase one accidental. Its own string+Tj bytes when it shares a text
+        run with other glyphs (a batched clef-and-signature element), the whole
+        element when it stands alone."""
+        e, gi = a[2], a[5]
+        if len(e.glyphs) > 1 and gi < len(e.gspans):
+            blanks[e.gspans[gi]] = b" "
+        else:
+            blanks[(e.qstart, e.qend)] = b" "
+
     for p in plans:
         st, acc, want = p["st"], p["acc"], p["want"]
         spacing = p["spacing"] * scale
-        for _, _, e, _ in acc[len(want):]:       # fewer accidentals than before
-            blanks[(e.qstart, e.qend)] = b" "
-        for i, idx in enumerate(want):
-            tx = p["lx"] + i * spacing
-            ty = st["top"] + idx * half
-            if i < len(acc):
-                sx, sy, e, _ = acc[i]
-                if scale == 1.0 and abs(tx - sx) < 0.05 and abs(ty - sy) < 0.05:
-                    continue                     # already in the right place
-                blanks[(e.qstart, e.qend)] = b" "
+        # Only a whole element drawing nothing but this accidental can serve
+        # as a clone template; cloning a batched run would redraw all of it.
+        templates = [a for a in acc
+                     if a[4] == want_glyph and len(a[2].glyphs) == 1]
+        same_sign = all(a[4] == want_glyph for a in acc)
+        keepable = same_sign and len(want) <= len(acc) \
+            and all(scale == 1.0
+                    and abs(p["lx"] + i * spacing - acc[i][0]) < 0.05
+                    and abs(st["top"] + idx * half - acc[i][1]) < 0.05
+                    for i, idx in enumerate(want))
+        if keepable:
+            # Same sign, same or fewer accidentals, already in place: keep the
+            # prefix, erase the surplus. Signatures nest - D major's two
+            # sharps are the first two of E major's four.
+            for a in acc[len(want):]:
+                blank(a)
+        else:
+            for a in acc:
+                blank(a)
+            if not want:
+                pass
+            elif templates or donor:
+                sx, sy, e = templates[0][:3] if templates else donor[:3]
+                for i, idx in enumerate(want):
+                    tx = p["lx"] + i * spacing
+                    ty = st["top"] + idx * half
+                    ins.append((e.qstart,
+                                clone(data, e, tx - sx, sy - ty, scale,
+                                      (sx, H - sy))))
             else:
-                sx, sy, e, _ = acc[-1]
-            ins.append((e.qstart,
-                        clone(data, e, tx - sx, sy - ty, scale,
-                              (sx, H - sy))))
+                undrawable.append(p)
         if p["shift"] > 0:
             zones.append((p["lx"], p["nx"], p["lo"], p["hi"], p["shift"]))
-    return ins, blanks, zones
+    return ins, blanks, zones, undrawable
 
 
 def header_shift(els, pops, gm, geom, notex, H, zones):
@@ -542,44 +650,73 @@ def chord_font_advances(page):
 
 def chord_edits(page, data, els, gm, H, steps, semis, flats):
     """Retypeset every chord symbol in the transposed key."""
+
+    class Piece:
+        """One shown string of chord text: the unit that can be rewritten.
+
+        For the classic exports one BT run is one string and the whole run is
+        rewritten in place. A batched export shows a whole line of chords
+        inside a single element, so each string is erased and repainted
+        individually instead.
+        """
+        __slots__ = ("e", "gis", "text", "span", "batched", "glyphs",
+                     "bt", "et", "ctm")
+
+        def __init__(self, e, gis, text, batched):
+            self.e, self.gis, self.text = e, gis, text
+            self.span = e.gspans[gis[0]] if gis[0] < len(e.gspans) else None
+            self.batched = batched
+            self.glyphs = [e.glyphs[k] for k in gis]
+            self.bt, self.et, self.ctm = e.bt, e.et, e.ctm
+
     runs, items = [], []
     for e in els:
         if e.kind != "text" or not e.glyphs or e.bt is None:
             continue
-        # A single Tj can show several characters, so trust the decoded run
-        # text when the parser has it and only fall back to per-glyph lookups.
-        first = gm.get((round(e.glyphs[0][0], 1), round(H - e.glyphs[0][1], 1)))
-        if e.text:
-            if not first or "Chords" not in first[1]:
+        # Group glyphs by shown string. A batched export interleaves chord
+        # strings with bar numbers and notation in ONE element, so the
+        # element's first glyph says nothing about any particular string.
+        spans = collections.defaultdict(list)
+        for gi in range(len(e.glyphs)):
+            spans[e.gspans[gi] if gi < len(e.gspans) else (0, 0)].append(gi)
+        nspans = len(spans)
+        whole_chord_element = None
+        for span, gis in sorted(spans.items()):
+            gtab = [gm.get((round(e.glyphs[k][0], 1),
+                            round(H - e.glyphs[k][1], 1))) for k in gis]
+            if not all(g and is_chord_font(g[1]) for g in gtab):
                 continue
-            chars = list(e.text)
-        else:
-            chars, ok, prev_right = [], True, None
-            for x, y, f, cid in e.glyphs:
-                g = gm.get((round(x, 1), round(H - y, 1)))
-                if g is None or "Chords" not in g[1]:
-                    ok = False
-                    break
+            # (char, cid) stay PAIRED even when a separator space is added:
+            # zipping two lists of different lengths silently skews the cid
+            # table one place per space and every rebuilt letter goes wrong.
+            pairs, prev_right = [], None
+            for g, k in zip(gtab, gis):
+                x = e.glyphs[k][0]
                 # Text extraction drops spaces, so a run holding two chords
                 # arrives glued together and only the first would transpose.
                 # Whitespace after the previous glyph's own ink is the
                 # separator - a distance between origins would also fire
                 # inside one symbol, right after any wide ligature ("sus").
                 if prev_right is not None and x - prev_right > 3.0:
-                    chars.append(" ")
-                chars.append(g[0])
+                    pairs.append((" ", None))
+                pairs.append((g[0], e.glyphs[k][3]))
                 bb = g[2] if len(g) > 2 and g[2] else None
                 prev_right = bb[2] if bb else x + 6.0
-            if not ok or not chars:
-                continue
-        if not chars:
-            continue
-        bt = data[e.bt:e.et]
-        tds = [float(m.group(1)) for m in TD_RE.finditer(bt)]
-        # each Td after the first is the advance of the glyph before it
-        deltas = (tds[1:] + [None])[:len(chars)]
-        runs.append((chars, [g[3] for g in e.glyphs], deltas))
-        items.append((e, "".join(chars), first[1]))
+            chars = [c for c, _cid in pairs]
+            fontname = gtab[0][1]
+            items.append((Piece(e, gis, "".join(chars), nspans > 1),
+                          "".join(chars), fontname))
+            if nspans == 1:
+                whole_chord_element = (pairs,)
+        if whole_chord_element:
+            pairs, = whole_chord_element
+            bt = data[e.bt:e.et]
+            tds = [float(m.group(1)) for m in TD_RE.finditer(bt)]
+            # each Td after the first is the advance of the glyph before it
+            deltas = (tds[1:] + [None])[:len(pairs)]
+            runs.append(([c for c, _ in pairs], [c2 for _, c2 in pairs],
+                         deltas))
+
 
     # Some exports emit one BT block per character, so "Bb" arrives as two
     # separate elements. Merge neighbours on the same line into one symbol,
@@ -613,8 +750,24 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
     items = merged
     if not items:                       # chart carries no chord symbols
         return {}, 0, [], []
+    for _e, _t, _f, group in items:
+        for pc in group:
+            if pc.batched:
+                cs, ks = [], []
+                ki = iter(pc.gis)
+                for ch in pc.text:
+                    cs.append(ch)
+                    ks.append(None if ch == " "
+                              else pc.e.glyphs[next(ki)][3])
+                runs.append((cs, ks, [None] * len(cs)))
     cid, width = CH.learn(runs, chord_font_advances(page))
     fallback = sorted(width.values())[len(width) // 2] if width else 0
+    # Chord fonts disagree about accidentals: Sibelius Chords faces keep the
+    # flat at 0xA8, a Type3 export just uses the letters. Write whichever this
+    # document's own font actually maps.
+    flatg = "\u00a8" if "\u00a8" in cid else "b"
+    sharpg = "\u00ab" if "\u00ab" in cid else "#"
+    simple = simple_font_resources(page)
     # horizontal room before the next chord symbol on the same line
     pos = sorted((round(H - e.glyphs[0][1], 1), e.glyphs[0][0], i)
                  for i, (e, _t, _f, _g) in enumerate(items))
@@ -623,9 +776,76 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
         nxt = next((px for py, px, _ in pos[k + 1:] if abs(py - y) < 2), None)
         room[i] = (nxt - x - 1.5) if nxt else 1e9
     edits, n, missed, redraw = {}, 0, [], []
+    tail = b""
+
+    def esc(bts):
+        return (b"(" + bts.replace(b"\\", rb"\\\\")
+                          .replace(b"(", rb"\(").replace(b")", rb"\)") + b")")
+
     for i, (e, text, fontname, group) in enumerate(items):
-        new = "".join(CH.transpose_glyphs(list(text), steps, semis))
+        new = "".join(CH.transpose_glyphs(list(text), steps, semis,
+                                          flatg, sharpg))
         if new == text:
+            continue
+        if any(pc.batched for pc in group):
+            # Batched export: the element holds a whole line of chords, so the
+            # symbol's own strings are erased and repainted individually.
+            # Each transposed character remembers which input glyph produced
+            # it, so the result can be split back over the original strings
+            # even when an accidental appears or disappears.
+            comb, owner = [], []
+            for pi, pc in enumerate(group):
+                comb.extend(list(pc.text))
+                owner.extend([pi] * len(pc.text))
+            pairs = CH.transpose_pairs(comb, steps, semis, flatg, sharpg)
+            newtexts = ["" for _ in group]
+            for ch, src in pairs:
+                newtexts[owner[min(src, len(owner) - 1)]] += ch
+            plan = []
+            ok = True
+            for pc, newt in zip(group, newtexts):
+                if newt == pc.text:
+                    continue
+                if any(ch not in cid for ch in newt if ch != " "):
+                    ok = False
+                    break
+                plan.append((pc, bytes(cid[ch] & 0xFF for ch in newt
+                                       if ch != " ")))
+            if ok:
+                for pc, bts in plan:
+                    # Replace the string INSIDE its own show operator. These
+                    # runs position glyphs by accumulated advances, so
+                    # erasing a string and repainting it elsewhere would
+                    # shift every glyph drawn after it in the same run.
+                    s0, s1 = pc.span
+                    snippet = data[s0:s1]
+                    m = STR_RE.search(snippet)
+                    if not m:
+                        continue
+                    edits[pc.span] = (snippet[:m.start()] + esc(bts)
+                                      + snippet[m.end():])
+                n += 1
+            else:
+                # the subset font lacks a needed letter: erase the strings and
+                # draw the whole symbol with an installed face
+                full = (CH.find_full_font(fontname)
+                        or CH.find_full_font("OpusChordsStd")
+                        or CH.find_full_font("Inkpen2ChordsStd"))
+                if full:
+                    for pc in group:
+                        if pc.span:
+                            edits[pc.span] = b" "
+                    bb = gm.get((round(e.glyphs[0][0], 1),
+                                 round(H - e.glyphs[0][1], 1)))
+                    size = bb[3] if bb and len(bb) > 3 else 10.0
+                    redraw.append({"x": e.glyphs[0][0],
+                                   "y": H - e.glyphs[0][1],
+                                   "text": new.replace("b", "\u00a8")
+                                              .replace("#", "\u00ab"),
+                                   "size": max(4.0, size), "font": full})
+                    n += 1
+                else:
+                    missed.append(new)
             continue
         sq = 1.0
         sc = abs(e.ctm[0]) or 1.0
@@ -633,7 +853,9 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
         avail = room.get(i, 1e9) / sc
         if nat > avail > 0:
             sq = max(0.78, avail / nat)
-        rep = CH.rebuild(data[e.bt:e.et], new, cid, width, fallback, sq)
+        onebyte = (e.glyphs[0][2] or "").lstrip("/") in simple
+        rep = CH.rebuild(data[e.bt:e.et], new, cid, width, fallback, sq,
+                         hexw=2 if onebyte else 4)
         if rep is not None:
             edits[(e.bt, e.et)] = rep
             for extra in group[1:]:          # symbol was split across blocks
@@ -642,7 +864,9 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
         else:
             # The embedded font is subsetted and lacks a letter we now need.
             # Blank the old symbol and redraw it with the full installed face.
-            full = CH.find_full_font(fontname)
+            full = (CH.find_full_font(fontname)
+                    or CH.find_full_font("OpusChordsStd")
+                    or CH.find_full_font("Inkpen2ChordsStd"))
             if full:
                 # Font size may come from Tf, or from the Tm scale when Tf is
                 # "1" - measure the drawn glyph instead of trusting either.
@@ -662,6 +886,9 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                 n += 1
             else:
                 missed.append("".join(new))
+    if tail:
+        # one past the end so it cannot collide with the glyph mover's tail
+        edits[(len(data) + 1, len(data) + 1)] = tail
     return edits, n, sorted(set(missed)), redraw
 
 
@@ -678,7 +905,8 @@ def on_staff_grid(y, geom, half):
     return False
 
 
-def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
+def ledger_edits(subs, gm, geom, H, steps, half, want_new=None,
+                 note_pts=None):
     """Recompute ledger lines instead of translating them.
 
     Ledger lines only exist at line positions (even staff indices outside the
@@ -690,10 +918,11 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
     # The notehead table is a set of ASCII letters that the music fonts remap,
     # so an ordinary 'w' in a text label matches it. Without the font test a
     # word above the staff asks for a stack of ledger lines of its own.
-    notes = [(x, y) for (x, y), v in gm.items()
-             if norm_glyph(v[0]) in NOTEHEADS
-             and is_music_font(v[1]) and not is_chord_font(v[1])
-             and on_staff_grid(y, geom, half)]
+    notes = note_pts if note_pts is not None else \
+        [(x, y) for (x, y), v in gm.items()
+         if norm_glyph(v[0]) in NOTEHEADS
+         and is_music_font(v[1]) and not is_chord_font(v[1])
+         and on_staff_grid(y, geom, half)]
     have = collections.defaultdict(set)     # (staff, x-bucket) -> slots present
     for ops in subs.values():
         pts = [p for o in ops for p in o.pts]
@@ -770,9 +999,171 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
     return edits
 
 
+
+FLAT_ORDER = ["B", "E", "A", "D", "G", "C", "F"]
+SHARP_ORDER = ["F", "C", "G", "D", "A", "E", "B"]
+
+
+def key_alters(sig):
+    if sig < 0:
+        return {n: -1 for n in FLAT_ORDER[:-sig]}
+    return {n: 1 for n in SHARP_ORDER[:sig]}
+
+
+def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
+                        src_sig, dst_sig, half, page):
+    """Re-spell every inline accidental for the new key.
+
+    Moving an accidental with its note preserves the GLYPH but not the
+    MEANING: a natural cancelling E major's D sharp names D natural, and after
+    transposing to C that note is B flat - the printed sign must become a
+    flat, not stay a natural. For every notehead: read its sounded pitch in
+    the old key, compute what the new key needs printed, and erase, swap or
+    add the accidental accordingly.
+    """
+    src_alt, dst_alt = key_alters(src_sig), key_alters(dst_sig)
+    blanks, ins, redraw = {}, [], []
+    stats = collections.Counter()
+
+    # per-staff clef: a grand staff mixes treble and bass
+    sbase = []
+    for st in geom:
+        base = 38                              # treble: top line F5
+        for (x, y), (c, fn, *_r) in gm.items():
+            if x < st["x0"] + 40 \
+               and abs(y - (st["top"] + st["bot"]) / 2) < 30 \
+               and norm_glyph(c) in ("&", "?"):
+                base = 38 if norm_glyph(c) == "&" else 26
+                break
+        sbase.append(base)
+
+    # inline accidentals (header/key-signature ones are handled elsewhere)
+    accs = []
+    for e in els:
+        if e.kind != "text" or not e.glyphs:
+            continue
+        for gi, (gx, gy, gf, cid) in enumerate(e.glyphs):
+            x, y = gx, H - gy
+            g = gm.get((round(x, 1), round(y, 1)))
+            if not g:
+                continue
+            ch = norm_glyph(g[0])
+            if ch not in ACCIDENTALS or not is_music_font(g[1]) \
+               or is_chord_font(g[1]):
+                continue
+            si = min(range(len(geom)), key=lambda k: abs(
+                y - (geom[k]["top"] + geom[k]["bot"]) / 2))
+            if x < notex[si] - 12:
+                continue                       # key signature, not inline
+            accs.append({"x": x, "y": y, "e": e, "gi": gi, "ch": ch,
+                         "used": False})
+
+    donors = {g: accidental_donor(els, gm, H, g) for g in "b#n"}
+    font = None                                # installed face, found lazily
+
+    heads = sorted((x, y) for (x, y), v in gm.items()
+                   if norm_glyph(v[0]) in NOTEHEADS
+                   and is_music_font(v[1]) and not is_chord_font(v[1])
+                   and on_staff_grid(y, geom, half))
+    for nx_, ny in heads:
+        si = min(range(len(geom)), key=lambda k: abs(
+            ny - (geom[k]["top"] + geom[k]["bot"]) / 2))
+        st = geom[si]
+        idx = round((ny - st["top"]) / half)
+        dia = sbase[si] - idx
+        step_o = STEPS[dia % 7]
+        att = None
+        for a in accs:
+            if not a["used"] and 0 < nx_ - a["x"] < 16 \
+               and abs(a["y"] - ny) < half * 0.9:
+                if att is None or a["x"] > att["x"]:
+                    att = a
+        alt_old = ACCIDENTALS[att["ch"]] if att else src_alt.get(step_o, 0)
+        midi_old = (dia // 7 + 1) * 12 + SEMI[step_o] + alt_old
+        dia_n = dia + steps
+        step_n = STEPS[dia_n % 7]
+        need = midi_old + semis - ((dia_n // 7 + 1) * 12 + SEMI[step_n])
+        want = None if need == dst_alt.get(step_n, 0) else need
+        want_ch = {None: None, -1: "b", 0: "n", 1: "#"}.get(want, "?!")
+        if want_ch == "?!":
+            stats["accidental_double"] += 1    # would need a double accidental
+            continue
+        cur_ch = att["ch"] if att else None
+        if att:
+            att["used"] = True
+        if cur_ch == want_ch:
+            continue                           # the moved glyph already reads right
+        if att:
+            e, gi = att["e"], att["gi"]
+            if len(e.glyphs) > 1 and gi < len(e.gspans):
+                blanks[e.gspans[gi]] = b" "
+            else:
+                blanks[(e.qstart, e.qend)] = b" "
+            stats["accidental_erased"] += 1
+        if want_ch:
+            new_y = st["top"] + (idx - steps) * half
+            ax = att["x"] if att else nx_ - 7.0
+            d = donors.get(want_ch)
+            if d:
+                dx_, dy_, de = d[0], d[1], d[2]
+                ins.append((de.qstart,
+                            clone(data, de, ax - dx_, dy_ - new_y, 1.0,
+                                  (dx_, H - dy_))))
+            else:
+                if font is None:
+                    font = installed_music_font(page) or ""
+                if font:
+                    redraw.append({"x": ax, "y": new_y, "text": want_ch,
+                                   "size": half * 8.0, "font": font})
+            stats["accidental_set_" + want_ch] += 1
+    return blanks, ins, redraw, stats
+
+
+STR_RE = re.compile(rb"(\((?:\\.|[^\\()])*\))|(<[0-9A-Fa-f\s]*>)")
+
+
+def repaint_span(data, e, gi, dy_user, replace=None):
+    """Bytes that redraw one shown string displaced vertically.
+
+    For a text run that mixes moving and fixed glyphs - one batched element
+    holding noteheads next to rests and barline numerals - the whole-element
+    translation is wrong for someone. The string is erased where it was and
+    repainted at the end of the page with its own full matrix, so the move
+    affects nothing else.
+    """
+    s0, s1 = e.gspans[gi]
+    m = STR_RE.search(data[s0:s1])
+    if not m or gi >= len(e.gmats):
+        return None
+    ctm_g, tm_g, size = e.gmats[gi]
+    res = (e.glyphs[gi][2] or "")
+    if not res.startswith("/"):
+        return None
+    mat = mat_mul(tm_g, ctm_g)
+    # The scale and skew come from the parsed matrices, but the ORIGIN comes
+    # from the aligned glyph position: the parser's own text-line tracking
+    # drifts on quote-operator runs, and a repaint at the drifted origin puts
+    # the glyph visibly in the wrong place.
+    gx, gy = e.glyphs[gi][0], e.glyphs[gi][1]
+    mat = (mat[0], mat[1], mat[2], mat[3], gx, gy + dy_user)
+    return (b" q BT %s %.4f Tf %.5f %.5f %.5f %.5f %.5f %.5f Tm %s Tj ET Q "
+            % ((res.encode("latin-1"), size) + mat
+               + (replace if replace is not None else m.group(0),)))
+
+
 def resource_fonts(page):
-    """Map a content-stream resource name to its base font name."""
-    return {f[4]: f[3].split("+")[-1] for f in page.get_fonts(full=True)}
+    """Map a content-stream resource name to its base font name.
+
+    Type3 fonts have no base name at all; synthesise the label the text
+    extractor uses ("Type3 (10 0 R)") so the role classifier can find them.
+    """
+    out = {}
+    for f in page.get_fonts(full=True):
+        name = f[3].split("+")[-1]
+        if not name and f[2] == "Type3":
+            name = "Type3 (%d 0 R)" % f[0]
+        out[f[4]] = name
+    return out
 
 
 def simple_font_resources(page):
@@ -783,6 +1174,28 @@ def simple_font_resources(page):
             out.add(f[4])
     return out
 
+
+
+def installed_music_font(page):
+    """A full system music font matching the document's, or any Sibelius one.
+
+    A Type3 export names no fonts at all, so when nothing matches fall back to
+    whichever standard Sibelius face is installed - the accidental shapes are
+    interchangeable enough for a key signature.
+    """
+    for f in page.get_fonts(full=True):
+        name = f[3]
+        if name and is_music_font(name) and not is_chord_font(name) \
+           and "Script" not in name and "Text" not in name \
+           and "Special" not in name:
+            hit = CH.find_full_font(name)
+            if hit:
+                return hit
+    for generic in ("OpusStd", "Inkpen2Std", "Opus", "Inkpen2"):
+        hit = CH.find_full_font(generic)
+        if hit:
+            return hit
+    return None
 
 
 def draw_keysig(page, geom, notex, src_sig, dst_sig, half, gm, pops=()):
@@ -865,11 +1278,74 @@ def keysig_scale(doc, src_sig, dst_sig):
     return s
 
 
+
+def vector_keysig(objs, kinds, info, geom, half, dst_sig, page):
+    """Adjust a key signature that is drawn as vector art.
+
+    Signatures of the same sign nest, so going to a smaller one only needs
+    the surplus accidentals collapsed to nothing. Growing or changing sign
+    erases them all and draws the target signature with an installed music
+    font - the shapes match closely enough for a signature.
+    """
+    edits, redraw = {}, []
+    per_staff = collections.defaultdict(list)
+    for pid, kind in kinds.items():
+        if kind != "keysig":
+            continue
+        x0, y0, x1, y1, w, h, cx, cy, curved, st = info[pid]
+        per_staff[id(st)].append((cx, cy, pid, st))
+
+    def collapse(pid):
+        # every x of the object onto ONE anchor: a zero-width fill paints
+        # nothing, but per-op anchors leave a nonzero sliver behind
+        anchor = None
+        for o in objs[pid]:
+            for si in X_SLOTS.get(o.op, ()):
+                if si < len(o.slots):
+                    val, s0, s1 = o.slots[si]
+                    if anchor is None:
+                        anchor = val
+                    edits[(s0, s1)] = b"%.5f" % anchor
+
+    font = None
+    for _sid, accs in per_staff.items():
+        accs.sort()
+        st = accs[0][3]
+        idx0 = round((accs[0][1] - st["top"]) / half)
+        # a vector glyph's control-point centre sits lower than its origin;
+        # judge the sign of the EXISTING signature by the source key instead
+        have_flats = idx0 >= 2
+        want = positions(dst_sig, bass=False)
+        same_sign = (dst_sig < 0) == have_flats
+        if same_sign and len(want) <= len(accs):
+            for _cx, _cy, pid, _st in accs[len(want):]:
+                collapse(pid)
+            continue
+        for _cx, _cy, pid, _st in accs:
+            collapse(pid)
+        if not want:
+            continue
+        if font is None:
+            font = installed_music_font(page) or ""
+        if not font:
+            continue
+        glyph = "b" if dst_sig < 0 else "#"
+        spacing = accs[1][0] - accs[0][0] if len(accs) > 1 else 2.258 * half
+        lx = accs[0][0] - 1.2
+        for i, idx in enumerate(want):
+            redraw.append({"x": lx + i * spacing,
+                           "y": st["top"] + idx * half,
+                           "text": glyph, "size": half * 8.0, "font": font,
+                           "keysig": True})
+    return edits, redraw
+
+
 def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
                    scale=1.0):
     H = page.rect.height
     data = page.read_contents()
     els, pops = parse(data, simple_fonts=simple_font_resources(page))
+    align_glyphs(page, els, H)
     geom = staff_geom(page)
     if not geom:
         return None, {}, []
@@ -881,20 +1357,48 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
     gmx = merged_glyph_map(page, els, H, gm)
     notex_hdr = first_note_x(page, gmx, geom)
     half = geom[0]["half"]
+    # A page with staves but no music-font glyphs is engraved as pure vector
+    # art; notes are found and moved geometrically instead.
+    vec_mode = not any(is_music_font(v[1]) and not is_chord_font(v[1])
+                       for v in gmx.values())
+    vkinds = vheads = vinfo = vobjs = None
+    if vec_mode:
+        vobjs = VEC.group(pops)
+        vkinds, vheads, vinfo = VEC.classify(vobjs, geom, half, H)
+        notex = [min([hx for hx, hy in vheads
+                      if abs(hy - (g["top"] + g["bot"]) / 2) < 40],
+                     default=g["x0"] + 60) for g in geom]
+        notex_hdr = notex
     dy_page = -steps * half          # steps<0 (down) -> positive page dy
     dy_user = -dy_page               # PDF user space has y up
 
     edits = {}
     stats = collections.Counter()
 
-    # ---- glyphs: shift whole q-blocks that draw a moving glyph
+    # ---- accidental re-spelling runs first, so the glyph mover knows which
+    # strings it has already erased and replaced
+    redraw_acc, respelled = [], set()
+    if src_sig != dst_sig or semis:
+        ab, ai, ar, ast = respell_accidentals(data, els, gmx, geom, notex, H,
+                                              steps, semis, src_sig, dst_sig,
+                                              half, page)
+        edits.update(ab)
+        respelled = set(ab)
+        for off, payload in ai:
+            key = (off, off)
+            edits[key] = edits.get(key, b"") + payload
+        redraw_acc = ar
+        stats.update(ast)
+
+    # ---- glyphs: shift whatever rides with the notes
+    tail = b""
     for e in els:
         if e.kind != "text" or not e.glyphs:
             continue
         # Text extraction silently omits some glyphs (overprinted noteheads,
         # for one). Falling back to the run text the parser decoded keeps those
         # notes in the transposition instead of stranding them at the old pitch.
-        move = True
+        flags = []
         for gi, (x, y, gf, cid) in enumerate(e.glyphs):
             g = gm.get((round(x, 1), round(H - y, 1)))
             if g is not None:
@@ -903,50 +1407,92 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
                 ch = e.text[gi]
                 fn = resfonts.get((gf or "").lstrip("/"), "")
             else:
-                move = False
-                break
-            if not classify_glyph(ch, fn, x, H - y, geom, notex):
-                move = False
-                break
-        if not move:
+                flags.append(None)
+                continue
+            flags.append(bool(classify_glyph(ch, fn, x, H - y, geom, notex)))
+        if not any(flags):
             continue
         d = e.ctm0[3]
-        if abs(d) < 1e-9:
+        if all(f for f in flags) and abs(d) > 1e-9:
+            # every glyph moves: translate the whole run at once
+            if e.standalone and e.tm_slots and len(e.tm_slots) >= 6:
+                # Text drawn outside q...Q: move it by rewriting its own text
+                # matrix. Wrapping it in q/Q instead would disturb the graphics
+                # state and can un-hide glyphs the original had clipped away.
+                val, s0, s1 = e.tm_slots[5]
+                edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
+            else:
+                edits[(e.inject_at, e.inject_at)] = (
+                    b" 1 0 0 1 0 %.5f cm " % (dy_user / d))
+            stats["glyph"] += len(e.glyphs)
             continue
-        if e.standalone and e.tm_slots and len(e.tm_slots) >= 6:
-            # Text drawn outside q...Q: move it by rewriting its own text
-            # matrix. Wrapping it in q/Q instead would disturb the graphics
-            # state and can un-hide glyphs the original had clipped away.
-            val, s0, s1 = e.tm_slots[5]
-            edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
-        else:
-            edits[(e.inject_at, e.inject_at)] = (
-                b" 1 0 0 1 0 %.5f cm " % (dy_user / d))
-        stats["glyph"] += len(e.glyphs)
+        # Mixed run: move string by string. A string only moves when every
+        # glyph in it rides with the notes; erase it in place and repaint it
+        # displaced, so its neighbours in the same run stay put.
+        by_span = collections.defaultdict(list)
+        for gi, f in enumerate(flags):
+            if gi < len(e.gspans):
+                by_span[e.gspans[gi]].append((gi, f))
+        for span, members in by_span.items():
+            fs = [f for _gi, f in members]
+            if not all(f is True for f in fs):
+                if any(fs):
+                    stats["glyph_mixed_span"] += len(members)
+                continue
+            if span in respelled or span in edits:
+                continue                     # someone else already edited it
+            rp = repaint_span(data, e, members[0][0], dy_user)
+            if rp is None:
+                stats["glyph_unmovable"] += len(members)
+                continue
+            edits[span] = b" "
+            tail += rp
+            stats["glyph"] += len(members)
+    if tail:
+        edits[(len(data), len(data))] = tail
 
     # ---- paths: rewrite the y operand of moving subpaths
     subs = collections.defaultdict(list)
     for o in pops:
         subs[o.sub].append(o)
-    for sid, ops in subs.items():
-        pts = [p for o in ops for p in o.pts]
-        painted = ops[-1].painted
-        kind = subpath_kind(pts, painted, ops[0].lw, geom, H)
-        stats["path_" + kind] += 1
-        if kind in ("staffline", "barline", "ledger", "furniture"):
-            continue
-        for o in ops:
-            d = o.ctm[3]
-            if abs(d) < 1e-9:
+    if vec_mode:
+        # geometric classification decides what rides with the notes
+        for pid, ops in vobjs.items():
+            kind = vkinds.get(pid, "other")
+            stats["vec_" + kind] += 1
+            if kind not in VEC.MOVING:
                 continue
-            for si in Y_SLOTS.get(o.op, ()):
-                if si >= len(o.slots):
+            for o in ops:
+                d = o.ctm[3]
+                if abs(d) < 1e-9:
                     continue
-                val, s0, s1 = o.slots[si]
-                edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
+                for si in Y_SLOTS.get(o.op, ()):
+                    if si >= len(o.slots):
+                        continue
+                    val, s0, s1 = o.slots[si]
+                    edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
+    else:
+        for sid, ops in subs.items():
+            pts = [p for o in ops for p in o.pts]
+            painted = ops[-1].painted
+            kind = subpath_kind(pts, painted, ops[0].lw, geom, H)
+            stats["path_" + kind] += 1
+            if kind in ("staffline", "barline", "ledger", "furniture"):
+                continue
+            for o in ops:
+                d = o.ctm[3]
+                if abs(d) < 1e-9:
+                    continue
+                for si in Y_SLOTS.get(o.op, ()):
+                    if si >= len(o.slots):
+                        continue
+                    val, s0, s1 = o.slots[si]
+                    edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
     new_ledgers = []
     edits.update(ledger_edits(subs, gm, geom, H, steps, half,
-                              want_new=new_ledgers))
+                              want_new=new_ledgers,
+                              note_pts=vheads if vec_mode else None))
+
 
     ce, ncho, miss, redraw = chord_edits(page, data, els, gm, H, steps, semis,
                                          dst_sig <= 0)
@@ -955,11 +1501,33 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
     if miss:
         stats["chords_unavailable"] = ",".join(miss)
 
-    if src_sig != dst_sig:
+    if vec_mode and src_sig != dst_sig:
+        vke, vkr = vector_keysig(vobjs, vkinds, vinfo, geom, half,
+                                 dst_sig, page)
+        edits.update(vke)
+        redraw.extend(vkr)
+        stats["keysig_vector"] = len(vke) + len(vkr)
+    if src_sig != dst_sig and not vec_mode:
         plans, page_scale = keysig_plan(page, els, gmx, geom, notex_hdr, H,
                                         dst_sig, half)
         ks_scale = min(page_scale, scale if scale else 1.0)
-        ins, blanks, zones = keysig_edits(data, plans, ks_scale, half, H)
+        donor = accidental_donor(els, gmx, H, "b" if dst_sig < 0 else "#")
+        ins, blanks, zones, undrawable = keysig_edits(data, plans, ks_scale,
+                                                      half, H, dst_sig, donor)
+        for p in undrawable:
+            # No glyph of the needed sign anywhere in the document: draw the
+            # signature with an installed music font instead.
+            font = installed_music_font(page)
+            if not font:
+                continue
+            glyph = "b" if dst_sig < 0 else "#"
+            spacing = p["spacing"] * ks_scale
+            for i, idx in enumerate(p["want"]):
+                redraw.append({"x": p["lx"] + i * spacing,
+                               "y": p["st"]["top"] + idx * half,
+                               "text": glyph, "size": half * 8.0 * ks_scale,
+                               "font": font, "keysig": True})
+                stats["keysig_drawn"] += 1
         edits.update(blanks)
         for off, payload in ins:
             key = (off, off)
@@ -979,6 +1547,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
                 edits[k] = edits.get(k, b"") + v if k[0] == k[1] else v
             stats["header_shift"] = round(max(z[4] for z in zones), 2)
 
+    redraw.extend(redraw_acc)
     for L in new_ledgers:
         redraw.append({"ledger": True, "x": L["x"], "y": L["y"],
                        "half": L["half"]})
@@ -1004,6 +1573,7 @@ def main():
           f"   key sig {s_sig} -> {d_sig}")
 
     doc = pymupdf.open(a.pdf)
+    activate_roles(doc)
     ks = keysig_scale(doc, s_sig, d_sig)
     if ks < 1.0:
         print(f"  key signature drawn at {ks:.0%} to fit the space the "

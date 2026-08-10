@@ -83,7 +83,7 @@ class Element:
 
 class PathOp:
     """One path-construction operator, with byte ranges so it can be rewritten."""
-    __slots__ = ("op", "slots", "ctm", "pts", "sub", "lw", "painted")
+    __slots__ = ("op", "slots", "ctm", "pts", "sub", "lw", "painted", "pid")
 
     def __init__(self, op, slots, ctm, pts, sub, lw):
         self.op = op
@@ -93,6 +93,7 @@ class PathOp:
         self.sub = sub          # subpath index
         self.lw = lw
         self.painted = ""
+        self.pid = -1           # paint-flush index: one drawn path object
 
 
 def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
@@ -117,6 +118,7 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
     font = None
     fsize = 1.0
     sub = -1
+    paint_id = 0                      # one id per painted path object
     standalone = False
     pend = []                         # path ops awaiting a paint operator
 
@@ -260,6 +262,8 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
         elif op in ("S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n"):
             for po in pend:
                 po.painted = op
+                po.pid = paint_id
+            paint_id += 1
             pend = []
             if cur is not None:
                 cur.lw = abs(lw * math.hypot(ctm[0], ctm[1]))

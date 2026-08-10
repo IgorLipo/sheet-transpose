@@ -16,6 +16,7 @@ try:                                    # package import (pip install)
     from .pdfsurgery import parse, edit, mat_mul, Y_SLOTS, X_SLOTS
     from .keysig import positions, clone
     from . import chords as CH
+    from . import vector as VEC
     from .omr import (staves, run, is_music_font, is_chord_font, norm_glyph,
                       font_roles, set_font_roles)
 except ImportError:                     # flat directory (the Air deployment)
@@ -23,6 +24,7 @@ except ImportError:                     # flat directory (the Air deployment)
     from pdfsurgery import parse, edit, mat_mul, Y_SLOTS, X_SLOTS
     from keysig import positions, clone
     import chords as CH
+    import vector as VEC
     from omr import (staves, run, is_music_font, is_chord_font, norm_glyph,
                      font_roles, set_font_roles)
 
@@ -684,7 +686,10 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                             round(H - e.glyphs[k][1], 1))) for k in gis]
             if not all(g and is_chord_font(g[1]) for g in gtab):
                 continue
-            chars, prev_right = [], None
+            # (char, cid) stay PAIRED even when a separator space is added:
+            # zipping two lists of different lengths silently skews the cid
+            # table one place per space and every rebuilt letter goes wrong.
+            pairs, prev_right = [], None
             for g, k in zip(gtab, gis):
                 x = e.glyphs[k][0]
                 # Text extraction drops spaces, so a run holding two chords
@@ -693,22 +698,24 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                 # separator - a distance between origins would also fire
                 # inside one symbol, right after any wide ligature ("sus").
                 if prev_right is not None and x - prev_right > 3.0:
-                    chars.append(" ")
-                chars.append(g[0])
+                    pairs.append((" ", None))
+                pairs.append((g[0], e.glyphs[k][3]))
                 bb = g[2] if len(g) > 2 and g[2] else None
                 prev_right = bb[2] if bb else x + 6.0
+            chars = [c for c, _cid in pairs]
             fontname = gtab[0][1]
             items.append((Piece(e, gis, "".join(chars), nspans > 1),
                           "".join(chars), fontname))
             if nspans == 1:
-                whole_chord_element = (chars, gis)
+                whole_chord_element = (pairs,)
         if whole_chord_element:
-            chars, gis = whole_chord_element
+            pairs, = whole_chord_element
             bt = data[e.bt:e.et]
             tds = [float(m.group(1)) for m in TD_RE.finditer(bt)]
             # each Td after the first is the advance of the glyph before it
-            deltas = (tds[1:] + [None])[:len(chars)]
-            runs.append((chars, [e.glyphs[k][3] for k in gis], deltas))
+            deltas = (tds[1:] + [None])[:len(pairs)]
+            runs.append(([c for c, _ in pairs], [c2 for _, c2 in pairs],
+                         deltas))
 
 
     # Some exports emit one BT block per character, so "Bb" arrives as two
@@ -746,9 +753,13 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
     for _e, _t, _f, group in items:
         for pc in group:
             if pc.batched:
-                runs.append((list(pc.text),
-                             [pc.e.glyphs[k][3] for k in pc.gis],
-                             [None] * len(pc.text)))
+                cs, ks = [], []
+                ki = iter(pc.gis)
+                for ch in pc.text:
+                    cs.append(ch)
+                    ks.append(None if ch == " "
+                              else pc.e.glyphs[next(ki)][3])
+                runs.append((cs, ks, [None] * len(cs)))
     cid, width = CH.learn(runs, chord_font_advances(page))
     fallback = sorted(width.values())[len(width) // 2] if width else 0
     # Chord fonts disagree about accidentals: Sibelius Chords faces keep the
@@ -778,33 +789,41 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
             continue
         if any(pc.batched for pc in group):
             # Batched export: the element holds a whole line of chords, so the
-            # symbol's own strings are erased and repainted individually. The
-            # marker keeps the at-root state flowing across a symbol split
-            # over several strings without letting lengths get confused.
-            comb = []
-            for pc in group:
+            # symbol's own strings are erased and repainted individually.
+            # Each transposed character remembers which input glyph produced
+            # it, so the result can be split back over the original strings
+            # even when an accidental appears or disappears.
+            comb, owner = [], []
+            for pi, pc in enumerate(group):
                 comb.extend(list(pc.text))
-                comb.append("\x00")
-            newtexts = "".join(CH.transpose_glyphs(comb[:-1], steps, semis,
-                                                   flatg, sharpg)) \
-                .split("\x00")
+                owner.extend([pi] * len(pc.text))
+            pairs = CH.transpose_pairs(comb, steps, semis, flatg, sharpg)
+            newtexts = ["" for _ in group]
+            for ch, src in pairs:
+                newtexts[owner[min(src, len(owner) - 1)]] += ch
             plan = []
             ok = True
             for pc, newt in zip(group, newtexts):
                 if newt == pc.text:
                     continue
-                if any(ch not in cid for ch in newt):
+                if any(ch not in cid for ch in newt if ch != " "):
                     ok = False
                     break
-                plan.append((pc, bytes(cid[ch] & 0xFF for ch in newt)))
+                plan.append((pc, bytes(cid[ch] & 0xFF for ch in newt
+                                       if ch != " ")))
             if ok:
                 for pc, bts in plan:
-                    rp = repaint_span(data, pc.e, pc.gis[0], 0.0,
-                                      replace=esc(bts))
-                    if rp is None:
+                    # Replace the string INSIDE its own show operator. These
+                    # runs position glyphs by accumulated advances, so
+                    # erasing a string and repainting it elsewhere would
+                    # shift every glyph drawn after it in the same run.
+                    s0, s1 = pc.span
+                    snippet = data[s0:s1]
+                    m = STR_RE.search(snippet)
+                    if not m:
                         continue
-                    edits[pc.span] = b" "
-                    tail += rp
+                    edits[pc.span] = (snippet[:m.start()] + esc(bts)
+                                      + snippet[m.end():])
                 n += 1
             else:
                 # the subset font lacks a needed letter: erase the strings and
@@ -886,7 +905,8 @@ def on_staff_grid(y, geom, half):
     return False
 
 
-def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
+def ledger_edits(subs, gm, geom, H, steps, half, want_new=None,
+                 note_pts=None):
     """Recompute ledger lines instead of translating them.
 
     Ledger lines only exist at line positions (even staff indices outside the
@@ -898,10 +918,11 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
     # The notehead table is a set of ASCII letters that the music fonts remap,
     # so an ordinary 'w' in a text label matches it. Without the font test a
     # word above the staff asks for a stack of ledger lines of its own.
-    notes = [(x, y) for (x, y), v in gm.items()
-             if norm_glyph(v[0]) in NOTEHEADS
-             and is_music_font(v[1]) and not is_chord_font(v[1])
-             and on_staff_grid(y, geom, half)]
+    notes = note_pts if note_pts is not None else \
+        [(x, y) for (x, y), v in gm.items()
+         if norm_glyph(v[0]) in NOTEHEADS
+         and is_music_font(v[1]) and not is_chord_font(v[1])
+         and on_staff_grid(y, geom, half)]
     have = collections.defaultdict(set)     # (staff, x-bucket) -> slots present
     for ops in subs.values():
         pts = [p for o in ops for p in o.pts]
@@ -1257,6 +1278,68 @@ def keysig_scale(doc, src_sig, dst_sig):
     return s
 
 
+
+def vector_keysig(objs, kinds, info, geom, half, dst_sig, page):
+    """Adjust a key signature that is drawn as vector art.
+
+    Signatures of the same sign nest, so going to a smaller one only needs
+    the surplus accidentals collapsed to nothing. Growing or changing sign
+    erases them all and draws the target signature with an installed music
+    font - the shapes match closely enough for a signature.
+    """
+    edits, redraw = {}, []
+    per_staff = collections.defaultdict(list)
+    for pid, kind in kinds.items():
+        if kind != "keysig":
+            continue
+        x0, y0, x1, y1, w, h, cx, cy, curved, st = info[pid]
+        per_staff[id(st)].append((cx, cy, pid, st))
+
+    def collapse(pid):
+        # every x of the object onto ONE anchor: a zero-width fill paints
+        # nothing, but per-op anchors leave a nonzero sliver behind
+        anchor = None
+        for o in objs[pid]:
+            for si in X_SLOTS.get(o.op, ()):
+                if si < len(o.slots):
+                    val, s0, s1 = o.slots[si]
+                    if anchor is None:
+                        anchor = val
+                    edits[(s0, s1)] = b"%.5f" % anchor
+
+    font = None
+    for _sid, accs in per_staff.items():
+        accs.sort()
+        st = accs[0][3]
+        idx0 = round((accs[0][1] - st["top"]) / half)
+        # a vector glyph's control-point centre sits lower than its origin;
+        # judge the sign of the EXISTING signature by the source key instead
+        have_flats = idx0 >= 2
+        want = positions(dst_sig, bass=False)
+        same_sign = (dst_sig < 0) == have_flats
+        if same_sign and len(want) <= len(accs):
+            for _cx, _cy, pid, _st in accs[len(want):]:
+                collapse(pid)
+            continue
+        for _cx, _cy, pid, _st in accs:
+            collapse(pid)
+        if not want:
+            continue
+        if font is None:
+            font = installed_music_font(page) or ""
+        if not font:
+            continue
+        glyph = "b" if dst_sig < 0 else "#"
+        spacing = accs[1][0] - accs[0][0] if len(accs) > 1 else 2.258 * half
+        lx = accs[0][0] - 1.2
+        for i, idx in enumerate(want):
+            redraw.append({"x": lx + i * spacing,
+                           "y": st["top"] + idx * half,
+                           "text": glyph, "size": half * 8.0, "font": font,
+                           "keysig": True})
+    return edits, redraw
+
+
 def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
                    scale=1.0):
     H = page.rect.height
@@ -1274,6 +1357,18 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
     gmx = merged_glyph_map(page, els, H, gm)
     notex_hdr = first_note_x(page, gmx, geom)
     half = geom[0]["half"]
+    # A page with staves but no music-font glyphs is engraved as pure vector
+    # art; notes are found and moved geometrically instead.
+    vec_mode = not any(is_music_font(v[1]) and not is_chord_font(v[1])
+                       for v in gmx.values())
+    vkinds = vheads = vinfo = vobjs = None
+    if vec_mode:
+        vobjs = VEC.group(pops)
+        vkinds, vheads, vinfo = VEC.classify(vobjs, geom, half, H)
+        notex = [min([hx for hx, hy in vheads
+                      if abs(hy - (g["top"] + g["bot"]) / 2) < 40],
+                     default=g["x0"] + 60) for g in geom]
+        notex_hdr = notex
     dy_page = -steps * half          # steps<0 (down) -> positive page dy
     dy_user = -dy_page               # PDF user space has y up
 
@@ -1360,25 +1455,43 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
     subs = collections.defaultdict(list)
     for o in pops:
         subs[o.sub].append(o)
-    for sid, ops in subs.items():
-        pts = [p for o in ops for p in o.pts]
-        painted = ops[-1].painted
-        kind = subpath_kind(pts, painted, ops[0].lw, geom, H)
-        stats["path_" + kind] += 1
-        if kind in ("staffline", "barline", "ledger", "furniture"):
-            continue
-        for o in ops:
-            d = o.ctm[3]
-            if abs(d) < 1e-9:
+    if vec_mode:
+        # geometric classification decides what rides with the notes
+        for pid, ops in vobjs.items():
+            kind = vkinds.get(pid, "other")
+            stats["vec_" + kind] += 1
+            if kind not in VEC.MOVING:
                 continue
-            for si in Y_SLOTS.get(o.op, ()):
-                if si >= len(o.slots):
+            for o in ops:
+                d = o.ctm[3]
+                if abs(d) < 1e-9:
                     continue
-                val, s0, s1 = o.slots[si]
-                edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
+                for si in Y_SLOTS.get(o.op, ()):
+                    if si >= len(o.slots):
+                        continue
+                    val, s0, s1 = o.slots[si]
+                    edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
+    else:
+        for sid, ops in subs.items():
+            pts = [p for o in ops for p in o.pts]
+            painted = ops[-1].painted
+            kind = subpath_kind(pts, painted, ops[0].lw, geom, H)
+            stats["path_" + kind] += 1
+            if kind in ("staffline", "barline", "ledger", "furniture"):
+                continue
+            for o in ops:
+                d = o.ctm[3]
+                if abs(d) < 1e-9:
+                    continue
+                for si in Y_SLOTS.get(o.op, ()):
+                    if si >= len(o.slots):
+                        continue
+                    val, s0, s1 = o.slots[si]
+                    edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
     new_ledgers = []
     edits.update(ledger_edits(subs, gm, geom, H, steps, half,
-                              want_new=new_ledgers))
+                              want_new=new_ledgers,
+                              note_pts=vheads if vec_mode else None))
 
 
     ce, ncho, miss, redraw = chord_edits(page, data, els, gm, H, steps, semis,
@@ -1388,7 +1501,13 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
     if miss:
         stats["chords_unavailable"] = ",".join(miss)
 
-    if src_sig != dst_sig:
+    if vec_mode and src_sig != dst_sig:
+        vke, vkr = vector_keysig(vobjs, vkinds, vinfo, geom, half,
+                                 dst_sig, page)
+        edits.update(vke)
+        redraw.extend(vkr)
+        stats["keysig_vector"] = len(vke) + len(vkr)
+    if src_sig != dst_sig and not vec_mode:
         plans, page_scale = keysig_plan(page, els, gmx, geom, notex_hdr, H,
                                         dst_sig, half)
         ks_scale = min(page_scale, scale if scale else 1.0)
