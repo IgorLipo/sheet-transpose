@@ -860,8 +860,14 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
     # Chord fonts disagree about accidentals: Sibelius Chords faces keep the
     # flat at 0xA8, a Type3 export just uses the letters. Write whichever this
     # document's own fonts actually map.
-    flatg = "\u00a8" if "\u00a8" in allch else "b"
-    sharpg = "\u00a9" if "\u00a9" in allch else "#"
+    # A Sibelius chord face keeps the flat at 0xA8 and the sharp at 0xA9
+    # (0xAB is the DOUBLE sharp); a Type3 export just uses the letters. The
+    # subset embedded in a flat-key chart contains no sharp at all, so the
+    # symbol goes to the redraw path with the installed face - which needs
+    # the face's own codepoint, not the ASCII letter.
+    sib = any(ch in allch for ch in "\u00a8\u2039\u00ab")
+    flatg = "\u00a8" if ("\u00a8" in allch or sib) else "b"
+    sharpg = "\u00a9" if ("\u00a9" in allch or sib) else "#"
     simple = simple_font_resources(page)
     # horizontal room before the next chord symbol on the same line
     pos = sorted((round(H - e.glyphs[0][1], 1), e.glyphs[0][0], i)
@@ -879,7 +885,7 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
 
     for i, (e, text, fontname, group) in enumerate(items):
         new = "".join(CH.transpose_glyphs(list(text), steps, semis,
-                                          flatg, sharpg))
+                                          flatg, sharpg, flats))
         if new == text:
             continue
         cid = cids.get((e.glyphs[0][2] or "").lstrip("/"), {})
@@ -893,7 +899,8 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
             for pi, pc in enumerate(group):
                 comb.extend(list(pc.text))
                 owner.extend([pi] * len(pc.text))
-            pairs = CH.transpose_pairs(comb, steps, semis, flatg, sharpg)
+            pairs = CH.transpose_pairs(comb, steps, semis, flatg, sharpg,
+                                       flats)
             newtexts = ["" for _ in group]
             for ch, src in pairs:
                 newtexts[owner[min(src, len(owner) - 1)]] += ch

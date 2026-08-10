@@ -7,9 +7,11 @@ same font, size and spacing as the originals.
 import re, os, glob, collections
 
 # Sibelius chord fonts remap ASCII: these are the glyphs we must read/write.
+# 0xA9 is the sharp; 0xAB is the DOUBLE sharp. Mapping a plain sharp onto
+# 0xAB prints C double-sharp minor where C sharp minor belongs.
 DECODE = {"‹": "m", "¨": "b", "Œ": "ma", "„": "j",
-          "Š": "", "«": "#"}
-ENCODE = {"m": "‹", "b": "¨", "#": "«"}
+          "Š": "", "©": "#", "«": "##"}
+ENCODE = {"m": "‹", "b": "¨", "#": "©"}
 
 SEMI = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 FLAT_N = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
@@ -32,13 +34,29 @@ def _alter(g):
     return 0
 
 
-def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG):
-    """Move one root/bass name, returning (letter, accidental_glyph_or_None)."""
+def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG,
+           flats=True):
+    """Move one root/bass name, returning (letter, accidental_glyph_or_None).
+
+    `flats` says how the destination key spells its black notes. Moving
+    every letter by the same step count is right for the diatonic notes,
+    but a chromatic root then comes out as whatever the arithmetic lands
+    on - Gb minor in a chart whose key signature says F sharp minor.
+    """
     pc = (SEMI[letter] + _alter(accg)) % 12
     new_letter = STEPS[(STEPS.index(letter) + steps) % 7]
     alter = ((pc + semis) - SEMI[new_letter]) % 12
     if alter > 6:
         alter -= 12
+    # A chord root is named the way its KEY names that pitch. Carrying the
+    # letter across by step count alone spells the black notes whichever way
+    # the arithmetic falls, so a chart whose signature says F sharp minor
+    # ends up printing G flat minor over it.
+    if alter:
+        want = (pc + semis) % 12
+        name = (FLAT_N if flats else SHARP_N)[want]
+        new_letter = name[0]
+        alter = -1 if "b" in name else 1 if "#" in name else 0
     if alter == 0:
         return new_letter, None
     if alter == -1:
@@ -50,7 +68,8 @@ def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG):
     return new_letter, None          # double flat: give up gracefully
 
 
-def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
+def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG,
+                    flats=True):
     """Like transpose_glyphs, but each output char remembers which input
     position produced it, so a symbol whose glyphs arrived as separate
     strings can be written back string by string."""
@@ -61,7 +80,8 @@ def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
         if at_name and g in STEPS:
             accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (
                 FLATG, SHARPG, DBLSHARPG, "b", "#", "\u00ac") else None
-            letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg)
+            letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg,
+                                    flats)
             if accg == "\u00ac" and newacc == flatg:
                 newacc = accg              # keep the face's own small flat
             out.append((letter, i))
@@ -79,7 +99,8 @@ def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
     return out
 
 
-def transpose_glyphs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
+def transpose_glyphs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG,
+                     flats=True):
     """Transpose a chord symbol at the glyph level.
 
     Only the root and bass letters (and their accidental glyphs) are rewritten;
@@ -93,7 +114,8 @@ def transpose_glyphs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
         if at_name and g in STEPS:
             accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (
                 FLATG, SHARPG, DBLSHARPG, "b", "#", "\u00ac") else None
-            letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg)
+            letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg,
+                                    flats)
             if accg == "\u00ac" and newacc == flatg:
                 newacc = accg
             out.append(letter)
