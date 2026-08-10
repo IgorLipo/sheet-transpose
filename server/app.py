@@ -99,7 +99,13 @@ def detect(pdf_path):
         info["sig"] = sig
         maj = {0: "C", -1: "F", -2: "Bb", -3: "Eb", -4: "Ab", -5: "Db", -6: "Gb",
                1: "G", 2: "D", 3: "A", 4: "E", 5: "B", 6: "F#"}.get(sig, "C")
-        rel_minor = KEYS[(KEYS.index(maj) - 3) % 12] if maj in KEYS else "A"
+        SHARPK = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A",
+                  "A#", "B"]
+        # sharp keys name their relative minor with a sharp: E goes with
+        # C sharp minor, never D flat minor
+        table = SHARPK if sig > 0 else KEYS
+        rel_minor = table[(KEYS.index(maj) - 3) % 12] if maj in KEYS \
+            else ("F#" if maj == "F#" else "A")
         info["major"] = maj
         info["minor"] = rel_minor + "m"
         # Pick whichever tonic the chart actually leans on: compare how often
