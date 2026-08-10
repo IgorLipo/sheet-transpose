@@ -352,7 +352,10 @@ def keysig_plan(page, els, gm, geom, notex, H, dst_sig, half):
             lx = min(lx, max(clef_right(gm, st, lx) + 0.75, lx - short))
         room = nextx + shift - lx
         if want and need > room:
-            scale = min(scale, max(0.55, (room - GAP) /
+            # The floor only guards against a signature so small it stops being
+            # readable; it must stay below anything a real chart asks for, or
+            # it silently reintroduces the overlap it exists to prevent.
+            scale = min(scale, max(0.40, (room - GAP) /
                                    max(need - GAP, 1e-6)))
         plans.append({"st": st, "acc": acc, "want": want, "spacing": spacing,
                       "lx": lx, "shift": shift, "nx": limit,
