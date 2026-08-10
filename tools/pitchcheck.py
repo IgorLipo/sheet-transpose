@@ -37,39 +37,22 @@ def read_notes(path, sig, base=38):
     import bisect
     for pno, page in enumerate(doc):
         sts = sorted(staves(page), key=lambda t: t[0][0])
+        # One authoritative glyph list: the low-level trace sees every
+        # glyph, with its true origin, in every export dialect. rawdict
+        # silently drops whole runs and the parser's decoded text only
+        # exists for single-byte fonts, so mixing the two counted some
+        # glyphs twice and missed others entirely.
         glyphs = []
-        seen = set()
-        for b in page.get_text("rawdict")["blocks"]:
-            for l in b.get("lines", []):
-                for sp in l["spans"]:
-                    if not is_music_font(sp["font"]) or is_chord_font(sp["font"]):
-                        continue
-                    for c in sp["chars"]:
-                        if c["c"] != " ":
-                            glyphs.append((c["origin"][0], c["origin"][1],
-                                           norm_glyph(c["c"])))
-                            seen.add((round(c["origin"][0], 1),
-                                      round(c["origin"][1], 1)))
-        # Text extraction drops some glyphs entirely, so read the content
-        # stream too - otherwise a note the transposer handled correctly looks
-        # like it appeared from nowhere.
-        H = page.rect.height
-        resf = TI.resource_fonts(page)
-        els, _ = parse(page.read_contents(),
-                       simple_fonts=TI.simple_font_resources(page))
-        for e in els:
-            if e.kind != "text" or not e.text:
+        for sp in page.get_texttrace():
+            if not sp.get("chars"):
                 continue
-            for gi, (gx, gy, gf, cid) in enumerate(e.glyphs):
-                if gi >= len(e.text):
-                    break
-                py = H - gy
-                if (round(gx, 1), round(py, 1)) in seen:
+            fn = sp["font"].split("+")[-1]
+            if not is_music_font(fn) or is_chord_font(fn):
+                continue
+            for ucs, _g, org, _b in sp["chars"]:
+                if ucs == 32:
                     continue
-                fn = resf.get((gf or "").lstrip("/"), "")
-                if not is_music_font(fn) or is_chord_font(fn):
-                    continue
-                glyphs.append((gx, py, norm_glyph(e.text[gi])))
+                glyphs.append((org[0], org[1], norm_glyph(chr(ucs))))
         # short horizontal segments = ledger lines, used to arbitrate staff
         # ownership for notes floating between two staves
         ledgers = []
@@ -120,28 +103,16 @@ def read_notes(path, sig, base=38):
                 best = min(range(len(sts)), key=lambda k: abs(
                     gy - (sts[k][0][0] + sts[k][4][0]) / 2))
             owner.setdefault(best, []).append(g)
-        # barlines per staff, for accidental persistence. A stem that spans
-        # the whole staff looks like a barline; a real barline never has a
-        # notehead beside it.
-        headx = sorted(x for x, y, ch in glyphs if ch in NOTEHEADS)
-        allbars = []
-        for st in sts:
-            xs = []
-            for d in page.get_drawings():
-                for it in d["items"]:
-                    if it[0] != "l":
-                        continue
-                    a, b = it[1], it[2]
-                    if abs(a.x - b.x) < 3.2 \
-                       and min(a.y, b.y) <= st[0][0] + 2 \
-                       and max(a.y, b.y) >= st[4][0] - 2:
-                        x = (a.x + b.x) / 2
-                        i = bisect.bisect(headx, x)
-                        if (i and x - headx[i - 1] < 3.9) or \
-                           (i < len(headx) and headx[i] - x < 3.9):
-                            continue
-                        xs.append(x)
-            allbars.append(sorted(xs))
+        # Barlines per staff, for accidental persistence - read with the
+        # transposer's own finder so the two cannot disagree about where a
+        # bar ends and an accidental stops applying.
+        geom_ = TI.staff_geom(page)
+        _els, _pops = parse(page.read_contents(),
+                            simple_fonts=TI.simple_font_resources(page))
+        allbars = TI.barlines(
+            geom_, _pops, page.rect.height, geom_[0]["half"],
+            heads=[(gx, gy) for gx, gy, gc in glyphs
+                   if gc in NOTEHEADS]) if geom_ else []
         for si, st in enumerate(sts):
             top, bot = st[0][0], st[4][0]
             half = (bot - top) / 8.0
@@ -161,6 +132,7 @@ def read_notes(path, sig, base=38):
             accs = [(x, y, ch) for x, y, ch in band
                     if ch in ACCID and x > first_head - 14]
             barstate = {}
+            claimed = set()
             for x, y, ch in band:
                 if ch not in NOTEHEADS:
                     continue
@@ -171,13 +143,38 @@ def read_notes(path, sig, base=38):
                 step, octv = STEPS[dia % 7], dia // 7
                 bar = bisect.bisect(allbars[si], x)
                 skey = (si, bar, idx)
-                # collect EVERY accidental attached to this head: a double
-                # flat is printed as two flat glyphs side by side
-                hits = [ACCID[ac] for ax, ay, ac in accs
-                        if 0 < x - ax < 16 and abs(ay - y) < half * 0.8]
-                if hits:
-                    alt = sum(hits) if all(h == hits[0] for h in hits) \
-                        else hits[0]
+                # A double flat is two flat glyphs SIDE BY SIDE, so they sum;
+                # but two glyphs at the same x are one glyph seen twice, and
+                # one glyph is one alteration however the key signature reads.
+                # Walk LEFT from the notehead, taking only glyphs that touch
+                # the one before: that is what makes a double accidental one
+                # symbol, and what keeps the previous note's sign out of it.
+                # Walk LEFT from the notehead, taking only glyphs that touch
+                # the one before: that is what makes a double accidental one
+                # symbol, and what keeps a neighbouring note's sign out of it.
+                # Nothing may be counted twice - a chord's notes each claim
+                # their own - so the nearest unclaimed glyph wins.
+                # An accidental belongs to the NEXT notehead on its own
+                # line, so take the nearest unclaimed one to the left and
+                # let a touching neighbour join it (a double accidental is
+                # two glyphs side by side). Anything further left belongs to
+                # an earlier note, however close this note's chord sits.
+                near = sorted(((ax, ay, ACCID[ac]) for ax, ay, ac in accs
+                               if 0 < x - ax < 26
+                               and abs(ay - y) < half * 0.55
+                               and (ax, ay) not in claimed), reverse=True)
+                uniq, edge = [], None
+                for ax, ay, a in near:
+                    if edge is not None and edge - ax > 8.5:
+                        break
+                    if not uniq or abs(uniq[-1][0] - ax) > 1.5:
+                        uniq.append((ax, a))
+                        claimed.add((ax, ay))
+                    edge = ax
+                if uniq:
+                    alt = (sum(a for _x, a in uniq)
+                           if len(uniq) > 1 and len({a for _x, a in uniq}) == 1
+                           else uniq[0][1])
                     barstate[skey] = alt
                 elif skey in barstate:
                     alt = barstate[skey]       # earlier sign still in force

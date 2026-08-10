@@ -99,6 +99,15 @@ def check(path, verbose=True):
                     if b is a or (b["kind"] == "keysig"
                                   and ks.index(b) < i):
                         continue
+                    # Two accidentals of a CHORD stack vertically at nearly
+                    # the same x: their glyph boxes touch but the ink does
+                    # not, and an engraver draws them exactly this way.
+                    if b["kind"] == "keysig" \
+                       and abs(a["x"] - b["x"]) < 6 \
+                       and abs((a["bb"][1] + a["bb"][3])
+                               - (b["bb"][1] + b["bb"][3])) / 2 \
+                       > st["half"] * 1.2:
+                        continue
                     ov = overlap(a["bb"], b["bb"])
                     if ov > MIN_OVERLAP:
                         hits.append((pno, si, a["ch"], round(a["x"], 1),

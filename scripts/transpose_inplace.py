@@ -69,13 +69,36 @@ def diatonic_shift(src, dst):
     two candidate letter distances, take the one whose size best matches
     the semitone movement (a diatonic step averages two semitones).
     """
-    s_pc, _, s_sig, s_root = parse_key(src)
-    d_pc, _, d_sig, d_root = parse_key(dst)
+    s_pc, s_min, s_sig, s_root = parse_key(src)
+    d_pc, d_min, d_sig, d_root = parse_key(dst)
     semis = (d_pc - s_pc) % 12
     if semis > 6:
         semis -= 12
+    # Letters and semitones must describe the SAME interval, or every note
+    # needs an extra accidental to make up the difference - Bb minor to
+    # A minor read as "down one letter, down one semitone" turns each of the
+    # five flats into a double flat. Both directions round the same letter
+    # gap; take the one whose size matches the semitone move.
     up = (STEPS.index(d_root[0]) - STEPS.index(s_root[0])) % 7
     steps = min((up, up - 7), key=lambda k: (abs(2 * k - semis), abs(k)))
+    # How far the spelling is off: the interval the letters describe versus
+    # the interval actually played. Anything past a single accidental means
+    # this key pair cannot be written as asked, so respell the destination
+    # enharmonically - the same sounding key, spelled the way a player
+    # expects (A major, not B double-flat major).
+    def sig_of(root_pc, minor):
+        maj = ORDER[(root_pc + 3) % 12] if minor else ORDER[root_pc]
+        return SIG.get(maj, 0)
+
+    letter_semis = (SEMI[STEPS[(STEPS.index(s_root[0]) + steps) % 7]]
+                    - SEMI[s_root[0]])
+    letter_semis -= 12 * round((letter_semis - semis) / 12.0)
+    drift = semis - letter_semis
+    if abs(d_sig) > 7 or abs(drift) > 1:
+        for cand in (d_sig + 12, d_sig - 12):
+            if abs(cand) <= 7:
+                d_sig = cand
+                break
     return steps, semis, s_sig, d_sig
 
 
@@ -448,7 +471,17 @@ def keysig_plan(page, els, gm, geom, notex, H, dst_sig, half):
             # rely on chord symbols alone). Leave it be.
             continue
         acc.sort()
-        widen = 1.22 if dst_sig > 0 else 1.0
+        # The signature is measured with the width of the glyph it will
+        # DRAW, not the one already printed: a sharp is a third wider than
+        # a flat, and sizing flats-to-sharps by the flat leaves the last
+        # sharp lying across whatever follows the header.
+        want_g = "b" if dst_sig < 0 else "#"
+        have_g = acc[0][4]
+        widen = 1.0
+        if want_g != have_g:
+            dw = accidental_donor(els, gm, H, want_g)
+            widen = (dw[3] / max(acc[0][3], 0.1)) if dw else (
+                1.33 if want_g == "#" else 0.78)
         # The clef names the staff, not the accidental's position: a sharp
         # signature starts at the TOP of the staff and the position test
         # would call every bass staff treble.
@@ -462,7 +495,11 @@ def keysig_plan(page, els, gm, geom, notex, H, dst_sig, half):
         want = positions(dst_sig, bass)
         spacing = (acc[1][0] - acc[0][0] if len(acc) > 1
                    else 2.258 * half) * widen
-        lx, width = acc[0][0], max(a[3] for a in acc)
+        # Neighbours must clear each other whatever the scale: spacing and
+        # glyph width shrink together, so a spacing narrower than the glyph
+        # overlaps just as badly at 75% as at full size.
+        spacing = max(spacing, max(a[3] for a in acc) * widen + 0.35)
+        lx, width = acc[0][0], max(a[3] for a in acc) * widen
         skip = {(round(a[0], 1), round(a[1], 1)) for a in acc}
         ksend = max(a[0] + a[3] for a in acc)
         limit = first_music_x(gm, st, lx, nx, ksend + HEADER_REACH, skip)
@@ -1076,6 +1113,55 @@ def key_alters(sig):
     return {n: 1 for n in SHARP_ORDER[:sig]}
 
 
+def barlines(geom, pops, H, half, heads=()):
+    """x of every barline, per staff.
+
+    A barline is often drawn in PIECES - a section bar as two strokes, a
+    repeat bar as stroke plus block - so vertical segments sharing an x are
+    unioned first. What then tells a barline from a stem long enough to
+    cross the staff is where it ENDS: a barline runs from the top line to
+    the bottom line and stops, a stem always overshoots to reach its note.
+    """
+    subs_ = collections.defaultdict(list)
+    for o in pops:
+        subs_[o.sub].append(o)
+    segs = collections.defaultdict(lambda: [1e9, -1e9])
+    for ops_ in subs_.values():
+        pts = [pt for o in ops_ for pt in o.pts]
+        xs = [pt[0] for pt in pts]
+        ys = [H - pt[1] for pt in pts]
+        if max(xs) - min(xs) > 3.2 or max(ys) - min(ys) < 2 * half:
+            continue
+        k = round(sum(xs) / len(xs) * 2) / 2
+        segs[k][0] = min(segs[k][0], min(ys))
+        segs[k][1] = max(segs[k][1], max(ys))
+    bars = [[] for _ in geom]
+    for x, (ylo, yhi) in segs.items():
+        for si, st in enumerate(geom):
+            # A barline covers the staff exactly, top line to bottom line.
+            # It may also run FURTHER when one stroke spans a whole grand
+            # staff, but it never stops short inside the staff - which is
+            # what a stem reaching across it does.
+            # A barline covers its staff exactly, top line to bottom line.
+            # Strokes that merely reach across - a stem, or a bracket drawn
+            # through a whole system - do not, and taking them as bar
+            # boundaries resets accidental state in the middle of a bar.
+            if not (abs(ylo - st["top"]) < 1.5
+                    and abs(yhi - st["bot"]) < 1.5):
+                continue
+            # A stem can also cover the staff exactly. What it cannot do is
+            # stand alone: it always carries a notehead at its side - on the
+            # left when it points down, the right when it points up.
+            mid = (st["top"] + st["bot"]) / 2
+            if any(abs(hy - mid) < 26 and -1.5 < x - hx < 8.0
+                   for hx, hy in heads):
+                continue
+            bars[si].append(x)
+    for b_ in bars:
+        b_.sort()
+    return bars
+
+
 def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
                         src_sig, dst_sig, half, page, pops=()):
     """Re-spell every inline accidental for the new key.
@@ -1154,7 +1240,11 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
         segs[k][1] = max(segs[k][1], max(ys))
     for x, (ylo, yhi) in segs.items():
         for si, st in enumerate(geom):
-            if ylo <= st["top"] + 3 and yhi >= st["bot"] - 3:
+            # A barline runs from the top line to the bottom line and stops.
+            # A stem long enough to cross the staff always overshoots one end
+            # to reach its notehead, so the ENDS tell them apart exactly -
+            # no guessing from what sits nearby.
+            if abs(ylo - st["top"]) < 1.5 and abs(yhi - st["bot"]) < 1.5:
                 bars[si].append(x)
     for b_ in bars:
         b_.sort()
@@ -1166,19 +1256,7 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
     # A stem long enough to span the staff is indistinguishable from a
     # barline by geometry alone; a real barline never has a notehead beside
     # it. (Chords widen the test: the head sits on either side of its stem.)
-    hx = sorted(x for x, _y in heads)
-    import bisect as _b
-
-    def near_head(x):
-        i = _b.bisect(hx, x)
-        # a stem touches its notehead (under ~3.6pt); the first note
-        # AFTER a barline keeps more clearance than that
-        return ((i and x - hx[i - 1] < 3.9)
-                or (i < len(hx) and hx[i] - x < 3.9))
-
-    for si in range(len(bars)):
-        bars[si] = [x for x in bars[si] if not near_head(x)]
-    old_state, new_state = {}, {}
+    old_state, new_state, drawn = {}, {}, set()
     for nx_, ny in heads:
         si = min(range(len(geom)), key=lambda k: abs(
             ny - (geom[k]["top"] + geom[k]["bot"]) / 2))
@@ -1193,7 +1271,10 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
                 if att is None or a["x"] > att["x"]:
                     att = a
         bar = bisect.bisect(bars[si], nx_)
-        key = (si, bar, dia)
+        # Keyed by the exact staff position, not the note name: an
+        # accidental governs ONE line, and sharing state with the same
+        # letter an octave away silences signs that are really needed.
+        key = (si, bar, idx)
         if att:
             alt_old = ACCIDENTALS[att["ch"]]
         elif key in old_state:
@@ -1205,7 +1286,7 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
         dia_n = dia + steps
         step_n = STEPS[dia_n % 7]
         need = midi_old + semis - ((dia_n // 7 + 1) * 12 + SEMI[step_n])
-        key_n = (si, bar, dia_n)
+        key_n = (si, bar, idx - steps)
         cur_new = new_state.get(key_n, dst_alt.get(step_n, 0))
         want = None if need == cur_new else need
         new_state[key_n] = need
@@ -1217,7 +1298,13 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
         cur_ch = att["ch"] if att else None
         if att:
             att["used"] = True
+        # One accidental per staff line per bar: two voices can land on the
+        # same line, and a second glyph beside the first reads as a double
+        # flat. The note keeps its own sign; only the redundant DRAW is
+        # skipped, so the pitch is unchanged either way.
+        slot = (si, bar, round((ny - steps * half) / half))
         if cur_ch == want_ch:
+            drawn.add(slot)
             continue                           # the moved glyph already reads right
         if att:
             e, gi = att["e"], att["gi"]
@@ -1227,7 +1314,18 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
                 blanks[(e.qstart, e.qend)] = b" "
             stats["accidental_erased"] += 1
         if want_ch:
-            new_y = st["top"] + (idx - steps) * half
+            # the note's OWN new position: deriving it from the staff index
+            # re-rounds through whichever staff was picked and can land the
+            # sign on a different system entirely
+            if slot in drawn and not att:
+                # Already printed on this line in this bar by another voice;
+                # it governs both notes. A second glyph beside the first
+                # reads as a double flat. A note that carried its OWN sign
+                # keeps one: its glyph was erased and must be replaced.
+                stats["accidental_shared"] += 1
+                continue
+            drawn.add(slot)
+            new_y = ny - steps * half
             ax = att["x"] if att else nx_ - 7.0
             if not att:
                 # never on top of the header: the first note of a system sits
@@ -1428,7 +1526,8 @@ def keysig_scale(doc, src_sig, dst_sig):
 
 
 
-def vector_keysig(objs, kinds, info, geom, half, dst_sig, page):
+def vector_keysig(objs, kinds, info, geom, half, dst_sig, page,
+                  notex=None):
     """Adjust a key signature that is drawn as vector art.
 
     Signatures of the same sign nest, so going to a smaller one only needs
@@ -1483,10 +1582,30 @@ def vector_keysig(objs, kinds, info, geom, half, dst_sig, page):
         if dst_sig > 0:
             spacing *= 1.22                  # sharps are wider than flats
         lx = accs[0][0] - 1.2
+        # A longer signature must still stop before whatever follows the
+        # header. Shrink it to fit rather than laying the last accidental
+        # across the barline that starts the music.
+        size = half * 8.0
+        si = geom.index(st) if st in geom else 0
+        limit = (notex[si] if notex else st["x0"] + 60)
+        # Anything drawn on this staff after the signature bounds it: the
+        # thick block of a repeat bar is a FILL, not a stroked barline, so
+        # asking for barlines alone misses exactly the shape that collides.
+        for pid, (bx0, _y0, _x1, _y1, _w, bh, _cx, _cy, _c, bst) in \
+                info.items():
+            if bst is st and kinds.get(pid) != "keysig" \
+               and bh > 2 * half and lx + 2 < bx0 < limit:
+                limit = min(limit, bx0)
+        need = (len(want) - 1) * spacing + spacing * 0.9
+        room = max(limit - lx - 1.2, 4.0)
+        if need > room:
+            k = max(0.55, room / need)
+            spacing *= k
+            size *= k
         for i, idx in enumerate(want):
             redraw.append({"x": lx + i * spacing,
                            "y": st["top"] + idx * half,
-                           "text": glyph, "size": half * 8.0, "font": font,
+                           "text": glyph, "size": size, "font": font,
                            "keysig": True})
     return edits, redraw
 
@@ -1655,7 +1774,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
 
     if vec_mode and src_sig != dst_sig:
         vke, vkr = vector_keysig(vobjs, vkinds, vinfo, geom, half,
-                                 dst_sig, page)
+                                 dst_sig, page, notex)
         edits.update(vke)
         redraw.extend(vkr)
         stats["keysig_vector"] = len(vke) + len(vkr)
