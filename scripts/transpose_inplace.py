@@ -33,6 +33,7 @@ NOTEHEADS = set("w\u0153\u02d9\u00cf\u00fa\u00c0")
 # Flags, dots and articulations all hang off a notehead and must ride
 # with it, or they end up detached from the note they belong to.
 ARTICULATIONS = set("^.>-_jJ\u2019\u201a")                # accent, staccato, tenuto
+CLEFS = set("&?B")            # treble, bass, alto in the ASCII remap
 # A natural has to ride with its note too. Leaving it behind strands it on
 # the old staff position, and the note then takes whatever the new key
 # signature says - which is how a B natural became an A flat, not an A.
@@ -183,6 +184,33 @@ def glyph_map(page):
                     g[(round(c["origin"][0], 1), round(c["origin"][1], 1))] = (
                         c["c"], s["font"].split("+")[-1], c["bbox"], s["size"])
     return g
+
+
+def merged_glyph_map(page, els, H, gm):
+    """`gm`, plus every glyph that get_text failed to report.
+
+    Some exports are almost invisible to get_text: on one chart it reports the
+    repeat sign and a single notehead and nothing else, so the clef, the key
+    signature and the time signature are all missing, and the header measures
+    as empty space that the new accidentals are free to occupy.
+
+    get_texttrace sits below the text extractor and does report them, with real
+    origins and real bounding boxes, so it is the one that decides geometry.
+    """
+    out = dict(gm)
+    for sp in page.get_texttrace():
+        if sp.get("type") != 0:               # 0 = ordinary filled text
+            continue
+        font = sp["font"].split("+")[-1]
+        for ucs, _gid, org, bb in sp["chars"]:
+            if ucs == 32:
+                continue
+            key = (round(org[0], 1), round(org[1], 1))
+            if key in out:
+                continue
+            out[key] = (chr(ucs), font, (bb[0], bb[1], bb[2], bb[3]),
+                        sp["size"])
+    return out
 
 
 def first_note_x(page, gm, geom):
@@ -409,12 +437,28 @@ def header_shift(els, pops, gm, geom, notex, H, zones):
     for e in els:
         if e.kind != "text" or not e.glyphs:
             continue
+        # A clef is fixed furniture. A mid-system clef change sits inside the
+        # header window of the staff it belongs to, and shifting it drags it
+        # away from the barline it announces.
+        if any(norm_glyph(gm.get((round(x, 1), round(H - y, 1)),
+                                 (" ", ""))[0] or " ") in CLEFS
+               for x, y, _, _ in e.glyphs):
+            continue
         ds = [zone_dx(x, H - y) for x, y, _, _ in e.glyphs]
         if any(d is None for d in ds):
             continue
         dx = min(ds)
         d = e.ctm0[0]
-        if dx > 0 and abs(d) > 1e-9:
+        if dx <= 0 or abs(d) < 1e-9:
+            continue
+        if e.tm_slots and len(e.tm_slots) >= 6:
+            # Rewrite this element's own Tm rather than injecting a cm. A cm
+            # stays in force until the enclosing Q, so it moves every later
+            # glyph in the same block too - and with nothing to restore it at
+            # all, a standalone run shifts the rest of the page.
+            val, s0, s1 = e.tm_slots[4]
+            edits[(s0, s1)] = b"%.5f" % (val + dx / d)
+        else:
             k = (e.inject_at, e.inject_at)
             edits[k] = edits.get(k, b"") + b" 1 0 0 1 %.5f 0 cm " % (dx / d)
     subs = collections.defaultdict(list)
@@ -446,25 +490,57 @@ def subpath_kind(pts, painted, lw, geom, H):
     w, h = max(xs) - min(xs), max(ys) - min(ys)
     ymid = (max(ys) + min(ys)) / 2
     if painted in ("f", "f*", "F", "B", "B*"):
+        # A beam spans a few notes at most. A filled box wider than that is
+        # furniture - a text frame, a rehearsal box, a rule under a heading -
+        # and moving it with the music detaches it from the text it belongs to.
+        if w > 120 and h < 3:
+            return "furniture"
         return "beam"
     if h < 1.2:                                   # horizontal
         for st in geom:
             for ln in st["lines"]:
                 if abs(ymid - ln) < 0.8 and w > 60:
                     return "staffline"
+        if w > 120:
+            return "furniture"        # a rule under a heading, not a beam
         return "ledger" if w < 40 else "beam"
     if w < 1.2:                                   # vertical
         for st in geom:
             if min(ys) <= st["top"] + 1 and max(ys) >= st["bot"] - 1:
                 return "barline"
         return "stem"
+    if w > 120 and h < 3:
+        return "furniture"        # a rule or frame, whatever paints it
     return "curve"
 
 
 TD_RE = re.compile(rb"([-\d.]+)\s+([-\d.]+)\s+Td")
 
 
-def chord_edits(data, els, gm, H, steps, semis, flats):
+def chord_font_advances(page):
+    """Advance width of each chord glyph, read from the embedded font.
+
+    Returned in the same 1000-per-em text-space units the Td offsets use.
+    """
+    out = {}
+    for f in page.get_fonts(full=True):
+        if not is_chord_font(f[3]):
+            continue
+        try:
+            font = pymupdf.Font(fontbuffer=page.parent.extract_font(f[0])[3])
+        except Exception:
+            continue
+        for ch in "ABCDEFG/¨«‹Œ„Š#b":
+            try:
+                a = font.glyph_advance(ord(ch)) * 1000.0
+            except Exception:
+                continue
+            if a > 0:
+                out.setdefault(ch, round(a, 3))
+    return out
+
+
+def chord_edits(page, data, els, gm, H, steps, semis, flats):
     """Retypeset every chord symbol in the transposed key."""
     runs, items = [], []
     for e in els:
@@ -478,7 +554,7 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
                 continue
             chars = list(e.text)
         else:
-            chars, ok, prev = [], True, None
+            chars, ok, prev_right = [], True, None
             for x, y, f, cid in e.glyphs:
                 g = gm.get((round(x, 1), round(H - y, 1)))
                 if g is None or "Chords" not in g[1]:
@@ -486,11 +562,14 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
                     break
                 # Text extraction drops spaces, so a run holding two chords
                 # arrives glued together and only the first would transpose.
-                # A wide gap is the separator.
-                if prev is not None and x - prev > 9.0:
+                # Whitespace after the previous glyph's own ink is the
+                # separator - a distance between origins would also fire
+                # inside one symbol, right after any wide ligature ("sus").
+                if prev_right is not None and x - prev_right > 3.0:
                     chars.append(" ")
                 chars.append(g[0])
-                prev = x
+                bb = g[2] if len(g) > 2 and g[2] else None
+                prev_right = bb[2] if bb else x + 6.0
             if not ok or not chars:
                 continue
         if not chars:
@@ -534,7 +613,7 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
     items = merged
     if not items:                       # chart carries no chord symbols
         return {}, 0, [], []
-    cid, width = CH.learn(runs)
+    cid, width = CH.learn(runs, chord_font_advances(page))
     fallback = sorted(width.values())[len(width) // 2] if width else 0
     # horizontal room before the next chord symbol on the same line
     pos = sorted((round(H - e.glyphs[0][1], 1), e.glyphs[0][0], i)
@@ -586,6 +665,19 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
     return edits, n, sorted(set(missed)), redraw
 
 
+def on_staff_grid(y, geom, half):
+    """True if y is a plausible notehead position on some staff.
+
+    A notehead sits on an exact half-step of its staff. Anything drifting off
+    that grid is text or ornament that merely happens to be nearby.
+    """
+    for st in geom:
+        pos = (y - st["top"]) / half
+        if -12 <= pos <= 20 and abs(pos - round(pos)) <= 0.3:
+            return True
+    return False
+
+
 def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
     """Recompute ledger lines instead of translating them.
 
@@ -595,8 +687,13 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
     line is collapsed to zero length.
     """
     edits = {}
+    # The notehead table is a set of ASCII letters that the music fonts remap,
+    # so an ordinary 'w' in a text label matches it. Without the font test a
+    # word above the staff asks for a stack of ledger lines of its own.
     notes = [(x, y) for (x, y), v in gm.items()
-             if norm_glyph(v[0]) in NOTEHEADS and "Chords" not in v[1]]
+             if norm_glyph(v[0]) in NOTEHEADS
+             and is_music_font(v[1]) and not is_chord_font(v[1])
+             and on_staff_grid(y, geom, half)]
     have = collections.defaultdict(set)     # (staff, x-bucket) -> slots present
     for ops in subs.values():
         pts = [p for o in ops for p in o.pts]
@@ -760,7 +857,9 @@ def keysig_scale(doc, src_sig, dst_sig):
         gm = glyph_map(page)
         els, _ = parse(page.read_contents(),
                        simple_fonts=simple_font_resources(page))
-        _, ps = keysig_plan(page, els, gm, geom, first_note_x(page, gm, geom),
+        gmx = merged_glyph_map(page, els, page.rect.height, gm)
+        _, ps = keysig_plan(page, els, gmx, geom,
+                            first_note_x(page, gmx, geom),
                             page.rect.height, dst_sig, geom[0]["half"])
         s = min(s, ps)
     return s
@@ -777,6 +876,10 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
     gm = glyph_map(page)
     resfonts = resource_fonts(page)
     notex = first_note_x(page, gm, geom)
+    # Header geometry is measured from the merged map, so charts whose header
+    # is invisible to text extraction are laid out from the content stream.
+    gmx = merged_glyph_map(page, els, H, gm)
+    notex_hdr = first_note_x(page, gmx, geom)
     half = geom[0]["half"]
     dy_page = -steps * half          # steps<0 (down) -> positive page dy
     dy_user = -dy_page               # PDF user space has y up
@@ -830,7 +933,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
         painted = ops[-1].painted
         kind = subpath_kind(pts, painted, ops[0].lw, geom, H)
         stats["path_" + kind] += 1
-        if kind in ("staffline", "barline", "ledger"):
+        if kind in ("staffline", "barline", "ledger", "furniture"):
             continue
         for o in ops:
             d = o.ctm[3]
@@ -845,7 +948,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
     edits.update(ledger_edits(subs, gm, geom, H, steps, half,
                               want_new=new_ledgers))
 
-    ce, ncho, miss, redraw = chord_edits(data, els, gm, H, steps, semis,
+    ce, ncho, miss, redraw = chord_edits(page, data, els, gm, H, steps, semis,
                                          dst_sig <= 0)
     edits.update(ce)
     stats["chords"] = ncho
@@ -853,7 +956,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
         stats["chords_unavailable"] = ",".join(miss)
 
     if src_sig != dst_sig:
-        plans, page_scale = keysig_plan(page, els, gm, geom, notex, H,
+        plans, page_scale = keysig_plan(page, els, gmx, geom, notex_hdr, H,
                                         dst_sig, half)
         ks_scale = min(page_scale, scale if scale else 1.0)
         ins, blanks, zones = keysig_edits(data, plans, ks_scale, half, H)
@@ -871,7 +974,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
             if vk:
                 stats["keysig_drawn"] = len(vk)
         if zones:
-            hs = header_shift(els, pops, gm, geom, notex, H, zones)
+            hs = header_shift(els, pops, gmx, geom, notex, H, zones)
             for k, v in hs.items():
                 edits[k] = edits.get(k, b"") + v if k[0] == k[1] else v
             stats["header_shift"] = round(max(z[4] for z in zones), 2)

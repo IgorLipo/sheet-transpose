@@ -9,22 +9,30 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pymupdf
 from sheet_transpose.transpose_inplace import (
-    staff_geom, glyph_map, first_note_x, ACCIDENTALS, norm_glyph)
+    staff_geom, glyph_map, merged_glyph_map, first_note_x, simple_font_resources,
+    ACCIDENTALS, NOTEHEADS, norm_glyph)
+from sheet_transpose.pdfsurgery import parse
 from sheet_transpose.omr import is_music_font, is_chord_font
 
 MIN_OVERLAP = 0.4          # points; less than this reads as touching, not colliding
 
 
-def header_items(page, st, nx, gm):
-    """Everything drawn in this staff's header, glyph or vector."""
+def header_items(page, st, nx, gm, ksx):
+    """Everything drawn in this staff's header, glyph or vector.
+
+    `ksx` holds the x of each key-signature accidental, decided by the caller.
+    Classifying them here by "left of the first note" would call a misplaced
+    accidental something else and then never test it - the checker would agree
+    with the bug it is supposed to catch.
+    """
     lo, hi = st["top"] - 2 * st["half"], st["bot"] + 2 * st["half"]
     out = []
     for (x, y), (ch, fn, bb, *_r) in gm.items():
-        if not (lo <= y <= hi) or x > nx + 1:
+        if not (lo <= y <= hi) or x > nx + 24:
             continue
         if not is_music_font(fn) or is_chord_font(fn):
             continue
-        kind = "keysig" if (norm_glyph(ch) in ACCIDENTALS and x < nx - 6) else "other"
+        kind = "keysig" if round(x, 1) in ksx else "other"
         out.append({"kind": kind, "ch": norm_glyph(ch), "x": x,
                     "bb": (bb[0], bb[1], bb[2], bb[3])})
     for d in page.get_drawings():
@@ -46,15 +54,41 @@ def overlap(a, b):
     return min(dx, dy) if dx > 0 and dy > 0 else 0.0
 
 
+def keysig_xs(gm, st, nx):
+    """x of every accidental this staff prints as a key signature.
+
+    Taken as the accidentals left of the first note, PLUS any accidental that
+    is not attached to a notehead - a stray one sitting over the time signature
+    or out in the bar is exactly the failure this tool exists to find.
+    """
+    lo, hi = st["top"] - 2 * st["half"], st["bot"] + 2 * st["half"]
+    heads = [x for (x, y), (ch, fn, bb, *_r) in gm.items()
+             if lo <= y <= hi and norm_glyph(ch) in NOTEHEADS
+             and is_music_font(fn) and not is_chord_font(fn)]
+    out = set()
+    for (x, y), (ch, fn, bb, *_r) in gm.items():
+        if not (lo <= y <= hi) or norm_glyph(ch) not in ACCIDENTALS:
+            continue
+        if not is_music_font(fn) or is_chord_font(fn):
+            continue
+        attached = any(0 < h - x < 14 for h in heads)
+        if x < nx - 6 or not attached:
+            out.add(round(x, 1))
+    return out
+
+
 def check(path, verbose=True):
     doc = pymupdf.open(path)
     hits = []
     for pno, page in enumerate(doc):
         geom = staff_geom(page)
-        gm = glyph_map(page)
+        els, _ = parse(page.read_contents(),
+                       simple_fonts=simple_font_resources(page))
+        gm = merged_glyph_map(page, els, page.rect.height, glyph_map(page))
         notex = first_note_x(page, gm, geom)
         for si, (st, nx) in enumerate(zip(geom, notex)):
-            items = header_items(page, st, nx, gm)
+            ksx = keysig_xs(gm, st, nx)
+            items = header_items(page, st, nx, gm, ksx)
             ks = [g for g in items if g["kind"] == "keysig"]
             for i, a in enumerate(ks):
                 for b in items:

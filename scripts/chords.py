@@ -69,10 +69,16 @@ def transpose_glyphs(glyphs, steps, semis):
     return out
 
 
-def learn(runs):
+def learn(runs, font_adv=None):
     """Build cid/advance tables from the chord runs already in the document.
 
     runs: [(chars, cids, td_advances)] where td_advances are text-space deltas.
+
+    A width is only observed for a character that has another one after it, so
+    anything that only ever ends a symbol - the flat in a chart whose chords
+    are all plain "B flat" - is never measured. Falling back to a generic width
+    then leaves a visible gap when that character lands mid-symbol, so the
+    embedded font's own advance fills the gaps when it can be read.
     """
     cid = {}
     adv = collections.defaultdict(list)
@@ -84,6 +90,17 @@ def learn(runs):
                 adv[ch].append(round(dx, 3))
     width = {ch: collections.Counter(v).most_common(1)[0][0]
              for ch, v in adv.items()}
+    # The observed Td deltas and the font's advances are in different units,
+    # and which unit the deltas use depends on the export. Calibrate on the
+    # characters seen both ways before trusting the font for the rest; mixing
+    # the two scales inserts a gap twenty times too wide.
+    if font_adv:
+        both = [width[ch] / font_adv[ch] for ch in width if ch in font_adv]
+        if both:
+            k = sorted(both)[len(both) // 2]
+            for ch in cid:
+                if ch not in width and ch in font_adv:
+                    width[ch] = round(font_adv[ch] * k, 3)
     return cid, width
 
 

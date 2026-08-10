@@ -148,5 +148,21 @@ def compare(src, dst, src_sig, dst_sig, semis, verbose=True):
 
 
 if __name__ == "__main__":
-    compare(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]),
-            int(sys.argv[5]))
+    src, dst = sys.argv[1], sys.argv[2]
+    # Read both key signatures off the pages. Taking them from the command line
+    # lets a wrong-key transposition pass: feed the checker the same mistaken
+    # source key the transposer used and every note agrees with it.
+    ssig = TI.source_key_signature(src)
+    dsig = TI.source_key_signature(dst)
+    semis = int(sys.argv[3]) if len(sys.argv) > 3 else None
+    if len(sys.argv) > 4:
+        want = int(sys.argv[4])
+        if want != ssig:
+            print("SOURCE KEY MISMATCH: page says %d accidentals, caller said %d"
+                  % (ssig, want))
+    print("source key sig %d -> output key sig %d" % (ssig, dsig))
+    if semis is None:
+        print("no semitone count given; pass it to check pitches")
+        sys.exit(0)
+    bad, un, extra = compare(src, dst, ssig, dsig, semis)
+    sys.exit(1 if bad else 0)
