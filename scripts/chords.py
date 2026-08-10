@@ -21,7 +21,8 @@ STEPS = "CDEFGAB"
 
 FLATG, SHARPG = "\u00a8", "\u00a9"     # chord-font flat / sharp glyphs
 DBLSHARPG = "\u00ab"                    # 0xAB is the DOUBLE sharp, not sharp
-FLAT_VARIANTS = {FLATG, "b", "\u00ac"}   # 0xAC: the small flat some faces use
+DBLFLATG = "\u00ac"                     # 0xAC is the DOUBLE flat
+FLAT_VARIANTS = {FLATG, "b"}
 
 
 def _alter(g):
@@ -31,6 +32,8 @@ def _alter(g):
         return 1
     if g == DBLSHARPG:
         return 2
+    if g == DBLFLATG:
+        return -2
     return 0
 
 
@@ -44,17 +47,18 @@ def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG,
     on - Gb minor in a chart whose key signature says F sharp minor.
     """
     pc = (SEMI[letter] + _alter(accg)) % 12
+    # Degree-preserving spelling, the way a musician transposes: the root
+    # keeps its scale-degree letter, and the accidental is whatever that
+    # letter needs - which correctly yields E sharp in G sharp minor and
+    # C flat in E flat minor, spellings no chromatic name table contains.
     new_letter = STEPS[(STEPS.index(letter) + steps) % 7]
     alter = ((pc + semis) - SEMI[new_letter]) % 12
     if alter > 6:
         alter -= 12
-    # A chord root is named the way its KEY names that pitch. Carrying the
-    # letter across by step count alone spells the black notes whichever way
-    # the arithmetic falls, so a chart whose signature says F sharp minor
-    # ends up printing G flat minor over it.
-    if alter:
-        want = (pc + semis) % 12
-        name = (FLAT_N if flats else SHARP_N)[want]
+    if abs(alter) > 2:
+        # beyond even a double accidental: fall back to the key's own
+        # chromatic naming rather than print something unreadable
+        name = (FLAT_N if flats else SHARP_N)[(pc + semis) % 12]
         new_letter = name[0]
         alter = -1 if "b" in name else 1 if "#" in name else 0
     if alter == 0:
@@ -65,7 +69,7 @@ def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG,
         return new_letter, sharpg
     if alter == 2:
         return new_letter, DBLSHARPG
-    return new_letter, None          # double flat: give up gracefully
+    return new_letter, DBLFLATG
 
 
 def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG,
@@ -79,11 +83,9 @@ def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG,
         g = glyphs[i]
         if at_name and g in STEPS:
             accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (
-                FLATG, SHARPG, DBLSHARPG, "b", "#", "\u00ac") else None
+                FLATG, SHARPG, DBLSHARPG, DBLFLATG, "b", "#") else None
             letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg,
                                     flats)
-            if accg == "\u00ac" and newacc == flatg:
-                newacc = accg              # keep the face's own small flat
             out.append((letter, i))
             if newacc:
                 out.append((newacc, i + 1 if accg else i))
@@ -113,11 +115,9 @@ def transpose_glyphs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG,
         g = glyphs[i]
         if at_name and g in STEPS:
             accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (
-                FLATG, SHARPG, DBLSHARPG, "b", "#", "\u00ac") else None
+                FLATG, SHARPG, DBLSHARPG, DBLFLATG, "b", "#") else None
             letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg,
                                     flats)
-            if accg == "\u00ac" and newacc == flatg:
-                newacc = accg
             out.append(letter)
             if newacc:
                 out.append(newacc)

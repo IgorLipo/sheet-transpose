@@ -57,7 +57,16 @@ def parse_key(name):
         raise SystemExit(f"bad key {name!r}")
     root, acc, minor = m.group(1), m.group(2), bool(m.group(3))
     pc = (SEMI[root] + (1 if acc == "#" else -1 if acc == "b" else 0)) % 12
-    maj = ORDER[(pc + 3) % 12] if minor else ORDER[pc]
+    # The signature must honour the spelling the user asked for: F sharp
+    # and G flat sound alike, but "transpose to F#" answered with a six-flat
+    # G flat signature under sharped notes is not a chart anyone can read.
+    sharp_maj = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A",
+                 "Bb", "B"]
+    if minor:
+        table = sharp_maj if acc == "#" else ORDER
+        maj = table[(pc + 3) % 12]
+    else:
+        maj = root + acc if root + acc in SIG else ORDER[pc]
     return pc, minor, SIG.get(maj, 0), root + acc
 
 
@@ -575,7 +584,7 @@ def keysig_edits(data, plans, scale, half, H, dst_sig, donor=None):
         element when it stands alone."""
         e, gi = a[2], a[5]
         if len(e.glyphs) > 1 and gi < len(e.gspans):
-            blanks[e.gspans[gi]] = b" "
+            blanks[e.gspans[gi]] = blank_show(data, e.gspans[gi])
         else:
             blanks[(e.qstart, e.qend)] = b" "
 
@@ -854,7 +863,8 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                               else pc.e.glyphs[next(ki)][3])
                 runs.append((cs, ks, [None] * len(cs),
                              (pc.e.glyphs[pc.gis[0]][2] or "").lstrip("/")))
-    cids, width = CH.learn(runs, chord_font_advances(page))
+    emw = chord_font_advances(page)        # em-thousandths, for TJ kerns
+    cids, width = CH.learn(runs, emw)
     fallback = sorted(width.values())[len(width) // 2] if width else 0
     allch = {ch for t in cids.values() for ch in t}
     # Chord fonts disagree about accidentals: Sibelius Chords faces keep the
@@ -920,9 +930,9 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                     # a composite font reads TWO bytes per glyph: write a hex
                     # string, one four-digit code per character
                     tok = b"<" + b"".join(b"%04X" % c for c in codes) + b">"
-                plan.append((pc, tok))
+                plan.append((pc, tok, newt))
             if ok:
-                for pc, tok in plan:
+                for pc, tok, newt in plan:
                     # Replace the string INSIDE its own show operator. These
                     # runs position glyphs by accumulated advances, so
                     # erasing a string and repainting it elsewhere would
@@ -932,8 +942,20 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                     m = STR_RE.search(snippet)
                     if not m:
                         continue
+                    comp = b""
+                    if m.end() >= len(snippet.rstrip()):
+                        # A bare string: an item of a TJ array, where every
+                        # glyph's width feeds the position of everything
+                        # after it. Give back the width difference as a kern
+                        # number - the only adjustment a TJ array allows.
+                        dw = (sum(emw.get(c, 500) for c in pc.text
+                                  if c != " ")
+                              - sum(emw.get(c, 500) for c in newt
+                                    if c != " "))
+                        if abs(dw) > 1:
+                            comp = b" %.2f " % (-dw)
                     edits[pc.span] = (snippet[:m.start()] + tok
-                                      + snippet[m.end():])
+                                      + snippet[m.end():] + comp)
                 n += 1
             else:
                 # the subset font lacks a needed letter: erase the strings and
@@ -1332,7 +1354,7 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
         if att:
             e, gi = att["e"], att["gi"]
             if len(e.glyphs) > 1 and gi < len(e.gspans):
-                blanks[e.gspans[gi]] = b" "
+                blanks[e.gspans[gi]] = blank_show(data, e.gspans[gi])
             else:
                 blanks[(e.qstart, e.qend)] = b" "
             stats["accidental_erased"] += 1
@@ -1390,6 +1412,21 @@ def respell_accidentals(data, els, gm, geom, notex, H, steps, semis,
 
 
 STR_RE = re.compile(rb"(\((?:\\.|[^\\()])*\))|(<[0-9A-Fa-f\s]*>)")
+
+
+
+def blank_show(data, span):
+    """Bytes that erase one shown string without disturbing the text cursor.
+
+    A string shown with the quote operator performs a line advance (T*)
+    before drawing; blanking it outright removes that advance and every
+    later line in the run shifts up by one leading. The advance must
+    survive the erase.
+    """
+    snippet = data[span[0]:span[1]].rstrip()
+    if snippet.endswith(b"'") or snippet.endswith(b'"'):
+        return b" T* "
+    return b" "
 
 
 def repaint_span(data, e, gi, dy_user, replace=None):
@@ -1683,6 +1720,12 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
         redraw_acc = ar
         stats.update(ast)
 
+    # noteheads that augmentation dots may attach to
+    dot_heads = [(x, y) for (x, y), v in gmx.items()
+                 if norm_glyph(v[0]) in NOTEHEADS
+                 and is_music_font(v[1]) and not is_chord_font(v[1])
+                 and on_staff_grid(y, geom, half)]
+
     # ---- glyphs: shift whatever rides with the notes
     tail = b""
     for e in els if steps else ():
@@ -1702,7 +1745,15 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
             else:
                 flags.append(None)
                 continue
-            flags.append(bool(classify_glyph(ch, fn, x, H - y, geom, notex)))
+            ride = bool(classify_glyph(ch, fn, x, H - y, geom, notex))
+            if not ride and norm_glyph(ch) == "\u00aa":
+                # An augmentation dot rides with its notehead; the repeat-
+                # colon uses the same glyph but sits beside a barline with
+                # no notehead at exactly its height just to the left.
+                py = H - y
+                ride = any(2.0 < x - hx < 13.0 and abs(hy - py) < 0.8
+                           for hx, hy in dot_heads)
+            flags.append(ride)
         if not any(flags):
             continue
         d = e.ctm0[3]
@@ -1738,7 +1789,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
             if rp is None:
                 stats["glyph_unmovable"] += len(members)
                 continue
-            edits[span] = b" "
+            edits[span] = blank_show(data, span)
             tail += rp
             stats["glyph"] += len(members)
     if tail:
