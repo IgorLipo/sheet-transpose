@@ -62,7 +62,7 @@ def keysig_xs(gm, st, nx):
     or out in the bar is exactly the failure this tool exists to find.
     """
     lo, hi = st["top"] - 2 * st["half"], st["bot"] + 2 * st["half"]
-    heads = [x for (x, y), (ch, fn, bb, *_r) in gm.items()
+    heads = [(x, y) for (x, y), (ch, fn, bb, *_r) in gm.items()
              if lo <= y <= hi and norm_glyph(ch) in NOTEHEADS
              and is_music_font(fn) and not is_chord_font(fn)]
     out = set()
@@ -71,8 +71,12 @@ def keysig_xs(gm, st, nx):
             continue
         if not is_music_font(fn) or is_chord_font(fn):
             continue
-        attached = any(0 < h - x < 14 for h in heads)
-        if x < nx - 6 or not attached:
+        # attached = a notehead just right of it, ON ITS OWN LINE. Ignoring
+        # the vertical test calls an accidental in a chord "stray" and then
+        # reports the neighbour it has always sat beside as a new collision.
+        attached = any(0 < hx - x < 14 and abs(hy - y) < st["half"] * 1.2
+                       for hx, hy in heads)
+        if (x < nx - 6 and not attached) or not attached:
             out.add(round(x, 1))
     return out
 

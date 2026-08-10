@@ -67,6 +67,10 @@ def font_roles(doc):
         cs = chars[fl]
         if pua[fl] / total[fl] > 0.5 and med > 6:
             roles[fl] = "music"
+        elif set(cs) <= set("b#n") and med > 8:
+            # a face drawing nothing but accidental letters at staff size is
+            # this tool's own redraw font for naturals and flats
+            roles[fl] = "music"
         elif (sum(cs[c] for c in "ABCDEFG") >= 2
               and any(c in _QUALITY for c in cs)
               and set(cs) <= set("ABCDEFG") | _QUALITY | set("135")):

@@ -17,12 +17,19 @@ SHARP_N = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 STEPS = "CDEFGAB"
 
 
-FLATG, SHARPG = "\u00a8", "\u00ab"     # chord-font flat / sharp glyphs
+FLATG, SHARPG = "\u00a8", "\u00a9"     # chord-font flat / sharp glyphs
+DBLSHARPG = "\u00ab"                    # 0xAB is the DOUBLE sharp, not sharp
 FLAT_VARIANTS = {FLATG, "b", "\u00ac"}   # 0xAC: the small flat some faces use
 
 
 def _alter(g):
-    return -1 if g in FLAT_VARIANTS else 1 if g in (SHARPG, "#") else 0
+    if g in FLAT_VARIANTS:
+        return -1
+    if g in (SHARPG, "#"):
+        return 1
+    if g == DBLSHARPG:
+        return 2
+    return 0
 
 
 def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG):
@@ -38,7 +45,9 @@ def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG):
         return new_letter, flatg
     if alter == 1:
         return new_letter, sharpg
-    return new_letter, None          # double accidental: give up gracefully
+    if alter == 2:
+        return new_letter, DBLSHARPG
+    return new_letter, None          # double flat: give up gracefully
 
 
 def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
@@ -51,7 +60,7 @@ def transpose_pairs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
         g = glyphs[i]
         if at_name and g in STEPS:
             accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (
-                FLATG, SHARPG, "b", "#", "\u00ac") else None
+                FLATG, SHARPG, DBLSHARPG, "b", "#", "\u00ac") else None
             letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg)
             if accg == "\u00ac" and newacc == flatg:
                 newacc = accg              # keep the face's own small flat
@@ -83,7 +92,7 @@ def transpose_glyphs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
         g = glyphs[i]
         if at_name and g in STEPS:
             accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (
-                FLATG, SHARPG, "b", "#", "\u00ac") else None
+                FLATG, SHARPG, DBLSHARPG, "b", "#", "\u00ac") else None
             letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg)
             if accg == "\u00ac" and newacc == flatg:
                 newacc = accg
@@ -113,12 +122,12 @@ def learn(runs, font_adv=None):
     then leaves a visible gap when that character lands mid-symbol, so the
     embedded font's own advance fills the gaps when it can be read.
     """
-    cid = {}
-    adv = collections.defaultdict(list)
-    for chars, cids, deltas in runs:
+    cid = collections.defaultdict(dict)   # per font resource: two subset
+    adv = collections.defaultdict(list)    # fonts NEVER share glyph codes
+    for chars, cids, deltas, res in runs:
         for ch, c in zip(chars, cids):
             if c is not None:
-                cid[ch] = c
+                cid[res][ch] = c
         for ch, dx in zip(chars, deltas):
             if dx is not None:
                 adv[ch].append(round(dx, 3))
@@ -128,14 +137,15 @@ def learn(runs, font_adv=None):
     # and which unit the deltas use depends on the export. Calibrate on the
     # characters seen both ways before trusting the font for the rest; mixing
     # the two scales inserts a gap twenty times too wide.
+    allch = {ch for t in cid.values() for ch in t}
     if font_adv:
         both = [width[ch] / font_adv[ch] for ch in width if ch in font_adv]
         if both:
             k = sorted(both)[len(both) // 2]
-            for ch in cid:
+            for ch in allch:
                 if ch not in width and ch in font_adv:
                     width[ch] = round(font_adv[ch] * k, 3)
-    return cid, width
+    return dict(cid), width
 
 
 HEAD = re.compile(rb"(/\w+)\s+([\d.]+)\s+Tf")

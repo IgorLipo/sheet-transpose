@@ -23,13 +23,16 @@ def snapshot(path):
         half = geom[0]["half"]
         objs = V.group(pops)
         kinds, heads, info = V.classify(objs, geom, half, H)
-        # barlines are excluded: a stem that moves down far enough to span
-        # the staff re-CLASSIFIES as a barline without having drifted at all
-        keep = sorted((round(info[pid][6], 1), round(info[pid][7], 1), k)
+        # Positions only, no kinds: classification is neighbour-sensitive,
+        # so a rest RE-CLASSIFIES as a flag when moved stems land beside it
+        # even though it has not moved a hair.
+        keep = sorted((round(info[pid][6], 1), round(info[pid][7], 1))
                       for pid, k in kinds.items()
                       if k in ("clef", "rest", "staffline"))
+        allpos = {(round(info[pid][6], 1), round(info[pid][7], 1))
+                  for pid in kinds}
         out.append({"page": pno, "heads": sorted(heads), "keep": keep,
-                    "half": half, "geom": geom})
+                    "allpos": allpos, "half": half, "geom": geom})
     return out
 
 
@@ -50,11 +53,9 @@ def compare(src, dst, steps):
                           f"y {ay + dy:.1f}, got ({bx:.1f},{by:.1f})")
                 moved += 1
         bad += moved
-        fixed_a = [t for t in a["keep"]]
-        fixed_b = [t for t in b["keep"]]
-        if fixed_a != fixed_b:
-            diff = [t for t in fixed_a if t not in fixed_b][:5]
-            print(f"p{a['page']}: fixed objects changed, e.g. {diff}")
+        gone = [t for t in a["keep"] if t not in b["allpos"]]
+        if gone:
+            print(f"p{a['page']}: fixed objects moved, e.g. {gone[:5]}")
             bad += 1
     print("NOTEHEAD ERRORS + FIXED-OBJECT DRIFT:", bad)
     return bad

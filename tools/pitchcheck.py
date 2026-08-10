@@ -26,10 +26,15 @@ def key_alters(sig):
 
 
 def read_notes(path, sig, base=38):
-    """base is the diatonic number of the top staff line: 38 = F5 (treble)."""
+    """base is the diatonic number of the top staff line: 38 = F5 (treble).
+
+    Accidentals persist to the end of the bar on their own staff position,
+    exactly as a player reads them.
+    """
     alters = key_alters(sig)
     doc = pymupdf.open(path)
     out = []
+    import bisect
     for pno, page in enumerate(doc):
         sts = sorted(staves(page), key=lambda t: t[0][0])
         glyphs = []
@@ -65,14 +70,78 @@ def read_notes(path, sig, base=38):
                 if not is_music_font(fn) or is_chord_font(fn):
                     continue
                 glyphs.append((gx, py, norm_glyph(e.text[gi])))
-        # Assign every glyph to its NEAREST staff exactly once. Scanning a
-        # band per staff counts anything between two staves twice, which shows
-        # up as phantom extra notes.
+        # short horizontal segments = ledger lines, used to arbitrate staff
+        # ownership for notes floating between two staves
+        ledgers = []
+        for d in page.get_drawings():
+            for it in d["items"]:
+                if it[0] == "l":
+                    a2, b2 = it[1], it[2]
+                    if abs(a2.y - b2.y) < 1.2 and 4 < abs(a2.x - b2.x) < 26:
+                        ledgers.append(((a2.x + b2.x) / 2, a2.y))
+
+        def ledger_count(x, y0, y1):
+            # count LEVELS, not strokes: an engraver often draws one ledger
+            # line as two overlapping segments
+            lo, hi = min(y0, y1), max(y0, y1)
+            return len({round(ly * 2) / 2 for lx, ly in ledgers
+                        if abs(lx - x) < 8 and lo - 1 < ly < hi + 1})
+
+        # Assign every glyph to ONE staff. Nearest-midpoint alone flips a
+        # coin for a note floating midway between the staves of a grand
+        # system; the ledger lines it would need settle the question - a
+        # treble D3 without four ledger lines under the staff cannot exist.
         owner = {}
         for gi, g in enumerate(glyphs):
-            si = min(range(len(sts)),
-                     key=lambda k: abs(g[1] - (sts[k][0][0] + sts[k][4][0]) / 2))
-            owner.setdefault(si, []).append(g)
+            gx, gy = g[0], g[1]
+            best, bestscore = None, None
+            for k, st_ in enumerate(sts):
+                top_, bot_ = st_[0][0], st_[4][0]
+                half_ = (bot_ - top_) / 8.0
+                pos = (gy - top_) / half_
+                idx_ = round(pos)
+                if abs(pos - idx_) > 0.38 or not -14 <= idx_ <= 22:
+                    continue
+                if idx_ <= -2:
+                    exp = len(range(-2, idx_ - 1, -2))
+                    got = ledger_count(gx, top_ + (idx_ - 0.5) * half_,
+                                       top_ - half_)
+                elif idx_ >= 10:
+                    exp = len(range(10, idx_ + 1, 2))
+                    got = ledger_count(gx, bot_ + half_,
+                                       top_ + (idx_ + 0.5) * half_)
+                else:
+                    exp = got = 0
+                score = (abs(exp - got),
+                         abs(gy - (top_ + bot_) / 2))
+                if bestscore is None or score < bestscore:
+                    best, bestscore = k, score
+            if best is None:
+                best = min(range(len(sts)), key=lambda k: abs(
+                    gy - (sts[k][0][0] + sts[k][4][0]) / 2))
+            owner.setdefault(best, []).append(g)
+        # barlines per staff, for accidental persistence. A stem that spans
+        # the whole staff looks like a barline; a real barline never has a
+        # notehead beside it.
+        headx = sorted(x for x, y, ch in glyphs if ch in NOTEHEADS)
+        allbars = []
+        for st in sts:
+            xs = []
+            for d in page.get_drawings():
+                for it in d["items"]:
+                    if it[0] != "l":
+                        continue
+                    a, b = it[1], it[2]
+                    if abs(a.x - b.x) < 3.2 \
+                       and min(a.y, b.y) <= st[0][0] + 2 \
+                       and max(a.y, b.y) >= st[4][0] - 2:
+                        x = (a.x + b.x) / 2
+                        i = bisect.bisect(headx, x)
+                        if (i and x - headx[i - 1] < 3.9) or \
+                           (i < len(headx) and headx[i] - x < 3.9):
+                            continue
+                        xs.append(x)
+            allbars.append(sorted(xs))
         for si, st in enumerate(sts):
             top, bot = st[0][0], st[4][0]
             half = (bot - top) / 8.0
@@ -84,21 +153,37 @@ def read_notes(path, sig, base=38):
                 if gx < st[0][1] + 30 and gc in ("&", "?"):
                     sbase = 38 if gc == "&" else 26
                     break
+            # anything left of the first notehead minus an accidental's
+            # width is key signature; a fixed clef-side offset disowns the
+            # accidentals of a system's very first note
+            first_head = min((x for x, y, ch in band if ch in NOTEHEADS),
+                             default=st[0][1] + 60)
             accs = [(x, y, ch) for x, y, ch in band
-                    if ch in ACCID and x > st[0][1] + 42]
+                    if ch in ACCID and x > first_head - 14]
+            barstate = {}
             for x, y, ch in band:
                 if ch not in NOTEHEADS:
                     continue
                 idx = round((y - top) / half)
-                if not -8 <= idx <= 16:
+                if not -14 <= idx <= 22:
                     continue
                 dia = sbase - idx
                 step, octv = STEPS[dia % 7], dia // 7
-                alt = alters.get(step, 0)
-                for ax, ay, ac in accs:
-                    if 0 < x - ax < 16 and abs(ay - y) < half * 0.8:
-                        alt = ACCID[ac]
-                        break
+                bar = bisect.bisect(allbars[si], x)
+                skey = (si, bar, idx)
+                # collect EVERY accidental attached to this head: a double
+                # flat is printed as two flat glyphs side by side
+                hits = [ACCID[ac] for ax, ay, ac in accs
+                        if 0 < x - ax < 16 and abs(ay - y) < half * 0.8]
+                if hits:
+                    alt = sum(hits) if all(h == hits[0] for h in hits) \
+                        else hits[0]
+                    barstate[skey] = alt
+                elif skey in barstate:
+                    alt = barstate[skey]       # earlier sign still in force
+                else:
+                    alt = alters.get(step, 0)
+                    barstate[skey] = alt
                 out.append({"page": pno, "sys": si, "x": round(x, 2),
                             "y": round(y, 2), "idx": idx,
                             "name": step + ("b" * -alt if alt < 0 else "#" * alt) + str(octv),
