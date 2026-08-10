@@ -54,7 +54,7 @@ class Element:
     """Drawing done inside one innermost q...Q, in PDF user space."""
     __slots__ = ("inject_at", "qstart", "qend", "ctm", "ctm0", "kind",
                  "pts", "glyphs", "lw", "ops", "bt", "et", "standalone",
-                 "text", "font", "tm_slots")
+                 "text", "font", "tm_slots", "gspans", "gmats")
 
     def __init__(self, inject_at, ctm):
         self.inject_at = inject_at
@@ -70,6 +70,8 @@ class Element:
         self.kind = None
         self.pts = []
         self.glyphs = []
+        self.gspans = []              # byte span of each glyph's string + Tj
+        self.gmats = []               # (ctm, tm, font_size) at each glyph
         self.lw = 0.0
         self.ops = []
 
@@ -110,7 +112,10 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
     elements, pathops = [], []
     operands = []                     # (value, start, end)
     tm = None
+    lm = None                         # text line matrix (Td/T* base)
+    leading = 0.0                     # TL, used by T* and '
     font = None
+    fsize = 1.0
     sub = -1
     standalone = False
     pend = []                         # path ops awaiting a paint operator
@@ -141,6 +146,8 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
         elif op == "w" and vals:
             lw = vals[-1]
         elif op == "Tf":
+            if vals:
+                fsize = vals[-1]
             for j in range(i - 1, max(-1, i - 4), -1):
                 if toks[j][0] == "name":
                     font = toks[j][1].decode("latin-1")
@@ -165,32 +172,69 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
                     cur = None
                     standalone = False
         elif op == "Tm" and len(vals) >= 6:
-            tm = tuple(vals[-6:])
+            tm = lm = tuple(vals[-6:])
             if cur is not None and cur.tm_slots is None:
                 cur.tm_slots = operands[-6:]
-        elif op in ("Td", "TD") and len(vals) >= 2 and tm is not None:
-            tm = mat_mul((1, 0, 0, 1, vals[-2], vals[-1]), tm)
-        elif op == "Tj" and tm is not None and cur is not None:
-            x, y = apply(mat_mul(tm, ctm), 0, 0)
-            cid = None
-            if i and toks[i - 1][0] == "hexstr":
-                h = toks[i - 1][1][1:-1].replace(b" ", b"")
-                cid = int(h, 16) if h else None
-            elif i and toks[i - 1][0] == "str":
-                # A literal string can carry SEVERAL characters in one Tj, so
-                # the whole run has to be decoded - taking only the first byte
-                # silently loses chord accidentals and slash basses.
-                body = toks[i - 1][1][1:-1]
-                body = re.sub(rb"\\([0-7]{1,3})",
-                              lambda m: bytes([int(m.group(1), 8) & 0xFF]), body)
-                body = re.sub(rb"\\(.)", rb"\1", body)
-                cid = body[0] if body else None
-                if font and font.lstrip("/") in simple_fonts:
-                    cur.text += body.decode("latin-1")
-            cur.kind = cur.kind or "text"
-            cur.font = cur.font or font
-            cur.glyphs.append((x, y, font, cid))
-            cur.pts.append((x, y))
+        elif op == "TL" and vals:
+            leading = vals[-1]
+        elif op in ("Td", "TD") and len(vals) >= 2 and lm is not None:
+            if op == "TD":
+                leading = -vals[-1]
+            lm = tm = mat_mul((1, 0, 0, 1, vals[-2], vals[-1]), lm)
+        elif op == "T*" and lm is not None:
+            lm = tm = mat_mul((1, 0, 0, 1, 0, -leading), lm)
+        elif op in ("Tj", "'", '"', "TJ") and tm is not None and cur is not None:
+            if op in ("'", '"'):
+                # both mean "next line, then show"
+                lm = tm = mat_mul((1, 0, 0, 1, 0, -leading), lm)
+
+            def show(kind_, body_, s_, e_):
+                """Record the glyphs of one shown string."""
+                x, y = apply(mat_mul(tm, ctm), 0, 0)
+                onebyte = font and font.lstrip("/") in simple_fonts
+                cids = []
+                if kind_ == "hexstr":
+                    h = body_[1:-1].replace(b" ", b"").replace(b"\n", b"") \
+                                   .replace(b"\r", b"")
+                    step_ = 2 if onebyte else 4
+                    for k in range(0, len(h) - step_ + 1, step_):
+                        cids.append(int(h[k:k + step_], 16))
+                else:
+                    raw = body_[1:-1]
+                    raw = re.sub(rb"\\([0-7]{1,3})",
+                                 lambda m: bytes([int(m.group(1), 8) & 0xFF]),
+                                 raw)
+                    raw = re.sub(rb"\\(.)", rb"\1", raw)
+                    if onebyte:
+                        cids = list(raw)
+                        cur.text += raw.decode("latin-1")
+                    else:
+                        cids = [int.from_bytes(raw[k:k + 2], "big")
+                                for k in range(0, len(raw) - 1, 2)]
+                cur.kind = cur.kind or "text"
+                cur.font = cur.font or font
+                for cid_ in cids:
+                    # every glyph of the string reports the string's origin;
+                    # align_glyphs() replaces these with the drawn positions
+                    cur.glyphs.append((x, y, font, cid_))
+                    cur.gspans.append((s_, e_))
+                    cur.gmats.append((ctm, tm, fsize))
+                    cur.pts.append((x, y))
+
+            if op == "TJ":
+                # the array token holds strings interleaved with kern numbers
+                if i and toks[i - 1][0] == "arr":
+                    abytes, abase = toks[i - 1][1], toks[i - 1][2]
+                    for m in re.finditer(
+                            rb"(\((?:\\.|[^\\()])*\))|(<[0-9A-Fa-f\s]*>)",
+                            abytes):
+                        body_ = m.group(0)
+                        # span covers ONLY the string: blanking may not eat
+                        # the kern numbers or the closing bracket of the array
+                        show("str" if m.group(1) else "hexstr", body_,
+                             abase + m.start(), abase + m.end())
+            elif i and toks[i - 1][0] in ("str", "hexstr"):
+                show(toks[i - 1][0], toks[i - 1][1], toks[i - 1][2], e)
         elif op in NOPERANDS:
             n = NOPERANDS[op]
             if len(operands) >= n:

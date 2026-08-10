@@ -19,13 +19,80 @@ NOT_MUSIC = ("Script", "Text", "Chords", "Arial", "Times", "Helvetica",
              "Metronome", "Figured")
 
 
-def is_music_font(f):
+# Per-document roles decided from what a font actually draws. Some exports
+# strip every font name ("Type3 (10 0 R)", "TTCC6t00"), so a name test alone
+# classifies the whole document as "no music here". Set via set_font_roles().
+FONT_ROLES = {}
+
+# Characters that only a chord symbol contains. A rehearsal-mark font also
+# prints A-G, so the roots alone cannot identify a chord font.
+_QUALITY = set("m+-/79246ø°#b¨«‹ŒŠ„(")
+
+
+def set_font_roles(roles):
+    """Install the document's content-based font classification."""
+    FONT_ROLES.clear()
+    FONT_ROLES.update(roles or {})
+
+
+def font_roles(doc):
+    """Classify each font by what it draws, for exports with useless names.
+
+    music  - majority of glyphs in the F0xx Private Use Area at staff size
+    chords - root letters plus at least one quality character (m, 7, /, ...)
+    text   - everything else
+    Name-based classification still wins where the name means something.
+    """
+    import collections
+    chars = collections.defaultdict(collections.Counter)
+    pua = collections.Counter()
+    total = collections.Counter()
+    sizes = collections.defaultdict(list)
+    for page in doc:
+        for sp in page.get_texttrace():
+            if sp.get("type") != 0:
+                continue
+            fl = sp["font"]
+            for ucs, _g, _o, _b in sp["chars"]:
+                total[fl] += 1
+                if 0xF000 <= ucs <= 0xF0FF:
+                    pua[fl] += 1
+                chars[fl][norm_glyph(chr(ucs))] += 1
+            sizes[fl].append(sp["size"])
+    roles = {}
+    for fl in total:
+        if _name_music(fl) or "Chords" in fl:
+            continue                      # the name already answers
+        med = sorted(sizes[fl])[len(sizes[fl]) // 2]
+        cs = chars[fl]
+        if pua[fl] / total[fl] > 0.5 and med > 6:
+            roles[fl] = "music"
+        elif (sum(cs[c] for c in "ABCDEFG") >= 2
+              and any(c in _QUALITY for c in cs)
+              and set(cs) <= set("ABCDEFG") | _QUALITY | set("135")):
+            roles[fl] = "chords"
+        else:
+            roles[fl] = "text"
+    return roles
+
+
+def _name_music(f):
     if any(k in f for k in NOT_MUSIC):
         return False
     return any(k in f for k in MUSIC_FONT)
 
 
+def is_music_font(f):
+    r = FONT_ROLES.get(f)
+    if r is not None:
+        return r == "music"
+    return _name_music(f)
+
+
 def is_chord_font(f):
+    r = FONT_ROLES.get(f)
+    if r is not None:
+        return r == "chords"
     return "Chords" in f
 
 

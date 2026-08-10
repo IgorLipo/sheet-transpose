@@ -34,20 +34,37 @@ def db():
 def pick_tonic(doc, maj, rel_minor):
     """Major or relative minor? Let the chord symbols decide."""
     import collections, re as _re
+    from sheet_transpose.omr import is_chord_font
     roots = collections.Counter()
-    for page in doc:
+    seq = []
+    for pno, page in enumerate(doc):
         for b in page.get_text("rawdict")["blocks"]:
             for l in b.get("lines", []):
                 for sp in l["spans"]:
-                    if "Chords" not in sp["font"]:
+                    if not is_chord_font(sp["font"]):
                         continue
                     t = "".join(c["c"] for c in sp["chars"]).strip()
                     m = _re.match(r"^([A-G][\u00a8\u00ab#b]?)", t)
                     if m:
                         minor = "\u2039" in t or _re.search(r"m(?!aj)", t)
-                        roots[(m.group(1).replace("\u00a8", "b"), bool(minor))] += 1
+                        key = (m.group(1).replace("\u00a8", "b")
+                                         .replace("\u00ab", "#"), bool(minor))
+                        roots[key] += 1
+                        seq.append((pno, round(sp["bbox"][1], 1),
+                                    sp["bbox"][0], key))
+    ordered = [k for *_pos, k in sorted(seq)]
     maj_hits = roots.get((maj, False), 0)
     min_hits = roots.get((rel_minor, True), 0)
+    # Raw counts alone are nearly a coin toss on a minor tune full of
+    # relative-major colour chords. What actually names the tonic is where
+    # the music starts and where it comes to rest, so the first and final
+    # chords each count as heavily as several passing ones.
+    if ordered:
+        for probe, w in ((ordered[0], 5), (ordered[-1], 5)):
+            if probe == (maj, False):
+                maj_hits += w
+            elif probe == (rel_minor, True):
+                min_hits += w
     return rel_minor + "m" if min_hits > maj_hits else maj
 
 
@@ -55,19 +72,28 @@ def pick_tonic(doc, maj, rel_minor):
 def detect(pdf_path):
     """Read the source key signature and title straight from the PDF."""
     import pymupdf
-    from sheet_transpose.transpose_inplace import source_key_signature
+    from sheet_transpose.transpose_inplace import source_key_signature, activate_roles
+    from sheet_transpose.omr import is_music_font, is_chord_font
     info = {"key": None, "sig": None, "pages": 0, "title": None}
     try:
         doc = pymupdf.open(pdf_path)
+        activate_roles(doc)
         info["pages"] = doc.page_count
-        # title = the largest text on page 1
+        # Title = the visually largest TEXT on page 1. Judged by the drawn
+        # bbox, not the reported point size: Type3 fonts report a size from
+        # their own FontMatrix, so a 2pt title can tower over a 20pt one. And
+        # music fonts are excluded, or the tallest clef "wins" as tofu boxes.
         best = (0, None)
-        for b in doc[0].get_text("dict")["blocks"]:
+        for b in doc[0].get_text("rawdict")["blocks"]:
             for l in b.get("lines", []):
                 for s in l["spans"]:
-                    t = s["text"].strip()
-                    if t and s["size"] > best[0] and len(t) > 2:
-                        best = (s["size"], t)
+                    if is_music_font(s["font"]) or is_chord_font(s["font"]):
+                        continue
+                    t = "".join(c["c"] for c in s["chars"]).strip()
+                    h = s["bbox"][3] - s["bbox"][1]
+                    if t and len(t) > 2 and t.isprintable() and h > best[0] \
+                       and not any(0xF000 <= ord(c) <= 0xF0FF for c in t):
+                        best = (h, t)
         info["title"] = best[1]
         sig = source_key_signature(pdf_path)
         info["sig"] = sig

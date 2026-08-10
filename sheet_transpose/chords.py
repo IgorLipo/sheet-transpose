@@ -21,10 +21,10 @@ FLATG, SHARPG = "\u00a8", "\u00ab"     # chord-font flat / sharp glyphs
 
 
 def _alter(g):
-    return -1 if g == FLATG else 1 if g == SHARPG else 0
+    return -1 if g in (FLATG, "b") else 1 if g in (SHARPG, "#") else 0
 
 
-def _shift(letter, accg, steps, semis):
+def _shift(letter, accg, steps, semis, flatg=FLATG, sharpg=SHARPG):
     """Move one root/bass name, returning (letter, accidental_glyph_or_None)."""
     pc = (SEMI[letter] + _alter(accg)) % 12
     new_letter = STEPS[(STEPS.index(letter) + steps) % 7]
@@ -34,13 +34,13 @@ def _shift(letter, accg, steps, semis):
     if alter == 0:
         return new_letter, None
     if alter == -1:
-        return new_letter, FLATG
+        return new_letter, flatg
     if alter == 1:
-        return new_letter, SHARPG
+        return new_letter, sharpg
     return new_letter, None          # double accidental: give up gracefully
 
 
-def transpose_glyphs(glyphs, steps, semis):
+def transpose_glyphs(glyphs, steps, semis, flatg=FLATG, sharpg=SHARPG):
     """Transpose a chord symbol at the glyph level.
 
     Only the root and bass letters (and their accidental glyphs) are rewritten;
@@ -52,8 +52,9 @@ def transpose_glyphs(glyphs, steps, semis):
     while i < n:
         g = glyphs[i]
         if at_name and g in STEPS:
-            accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (FLATG, SHARPG) else None
-            letter, newacc = _shift(g, accg, steps, semis)
+            accg = glyphs[i + 1] if i + 1 < n and glyphs[i + 1] in (
+                FLATG, SHARPG, "b", "#") else None
+            letter, newacc = _shift(g, accg, steps, semis, flatg, sharpg)
             out.append(letter)
             if newacc:
                 out.append(newacc)
@@ -112,7 +113,7 @@ def natural_width(text, width, fallback_w):
     return sum(width.get(ch, fallback_w) for ch in text)
 
 
-def rebuild(bt_bytes, text, cid, width, fallback_w, squeeze=1.0):
+def rebuild(bt_bytes, text, cid, width, fallback_w, squeeze=1.0, hexw=4):
     """A replacement BT...ET run drawing `text` at the original origin.
 
     `squeeze` horizontally condenses the symbol (via Tz) when the transposed
@@ -137,7 +138,9 @@ def rebuild(bt_bytes, text, cid, width, fallback_w, squeeze=1.0):
             # Td offsets are in UNSCALED text space, so Tz does not shrink them;
             # scale them here or the condensed glyphs would leave gaps.
             parts += [b"%.5f 0 Td " % (width.get(prev, fallback_w) * squeeze)]
-        parts += [b"<%04X> Tj " % cid[ch]]
+        # A one-byte (simple or Type3) font reads hex strings byte by byte,
+        # so a four-digit code would draw a NUL glyph before every character.
+        parts += [b"<%0*X> Tj " % (hexw, cid[ch])]
         prev = ch
     parts.append(b"ET")
     if squeeze < 0.999:
