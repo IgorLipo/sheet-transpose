@@ -1025,6 +1025,7 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None,
     line is collapsed to zero length.
     """
     edits = {}
+    kept = []                      # ledger lines that survive, at their new y
     # The notehead table is a set of ASCII letters that the music fonts remap,
     # so an ordinary 'w' in a text label matches it. Without the font test a
     # word above the staff asks for a stack of ledger lines of its own.
@@ -1064,6 +1065,8 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None,
         rank = abs(idx) // 2 - (1 if idx < 0 else 5)
         rank = max(0, (abs(idx + 2) // 2) if idx < 0 else (idx - 10) // 2)
         newidx = want[rank] if rank < len(want) else None
+        if newidx is not None:
+            kept.append((cx, st["top"] + newidx * half))
         anchor = ops[0].slots[0][0]       # x of this subpath's 'm'
         for o in ops:
             d = o.ctm[3]
@@ -1086,9 +1089,10 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None,
     # A note can move ONTO a ledger position that had no line before; without
     # this the notehead floats above the staff with nothing under it.
     if want_new is not None:
-        seen = collections.defaultdict(set)
-        for k, v in have.items():
-            seen[k] = v
+        # Every ledger line that will exist after the edits above, at its
+        # real position. Reconstructing an x from the bucket index loses
+        # precision and lets a line claim a slot several points away.
+        placed = list(kept)
         for nx_, ny in notes:
             st = min(geom, key=lambda g: abs(ny - (g["top"] + g["bot"]) / 2))
             nidx = round((ny - st["top"]) / half) - steps
@@ -1099,13 +1103,17 @@ def ledger_edits(subs, gm, geom, H, steps, half, want_new=None,
                 need = list(range(10, nidx + 1, 2))
             if not need:
                 continue
-            key = (id(st), round(nx_ / 6))
+            # Bucketing by a rounded x lets two neighbouring notes share a
+            # bucket, and the deeper one then finds its outermost slot
+            # already ""covered"" by the shallower one's stack. Ask instead
+            # whether a line will exist at THIS slot near THIS note.
             for slot in need:
-                if slot in seen.get(key, ()):  
+                ly = st["top"] + slot * half
+                if any(abs(lx - nx_) < 9 and abs(lyy - ly) < 1.2
+                       for lx, lyy in placed):
                     continue
-                seen.setdefault(key, set()).add(slot)
-                want_new.append({"x": nx_, "y": st["top"] + slot * half,
-                                 "half": half})
+                placed.append((nx_, ly))
+                want_new.append({"x": nx_, "y": ly, "half": half})
     return edits
 
 

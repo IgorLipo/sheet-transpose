@@ -75,8 +75,22 @@ def read_notes(path, sig, base=38):
         # system; the ledger lines it would need settle the question - a
         # treble D3 without four ledger lines under the staff cannot exist.
         owner = {}
+        # Accidentals are assigned AFTER noteheads, to the staff of the
+        # note they precede: scoring them independently lets a freshly
+        # drawn ledger line flip a flat onto the neighbouring staff, and
+        # its note then reads unaltered.
+        heads_only = [g for g in glyphs if g[2] in NOTEHEADS]
+        deferred = []
+        headstaff = {}
         for gi, g in enumerate(glyphs):
             gx, gy = g[0], g[1]
+            if g[2] in ACCID:
+                near = [h for h in heads_only
+                        if 0 < h[0] - gx < 26 and abs(h[1] - gy) < 6]
+                if near:
+                    deferred.append((g, min(near,
+                                            key=lambda h: h[0] - gx)))
+                    continue
             best, bestscore = None, None
             for k, st_ in enumerate(sts):
                 top_, bot_ = st_[0][0], st_[4][0]
@@ -103,6 +117,14 @@ def read_notes(path, sig, base=38):
                 best = min(range(len(sts)), key=lambda k: abs(
                     gy - (sts[k][0][0] + sts[k][4][0]) / 2))
             owner.setdefault(best, []).append(g)
+            if g[2] in NOTEHEADS:
+                headstaff[(round(g[0], 1), round(g[1], 1))] = best
+        for g, h in deferred:
+            si_ = headstaff.get((round(h[0], 1), round(h[1], 1)))
+            if si_ is None:
+                si_ = min(range(len(sts)), key=lambda k: abs(
+                    g[1] - (sts[k][0][0] + sts[k][4][0]) / 2))
+            owner.setdefault(si_, []).append(g)
         # Barlines per staff, for accidental persistence - read with the
         # transposer's own finder so the two cannot disagree about where a
         # bar ends and an accidental stops applying.
