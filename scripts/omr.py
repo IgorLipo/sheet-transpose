@@ -3,7 +3,8 @@ import fitz, sys, json
 
 # Notehead glyphs across the Sibelius font variants. 'I'/'\u00cf' appear in the
 # PUA-encoded exports; the rest are the ASCII-remapped ones.
-NOTEHEADS = {'\u0153', 'w', 'h', 'q', 'e', 'x', '\u00cf', '\u02d9'}
+NOTEHEADS = {'\u0153', 'w', 'h', 'q', 'e', 'x',
+             '\u00cf', '\u02d9', '\u00fa', '\u00c0'}
 
 # Sibelius ships several music-font families (Opus, Inkpen2, Reprise, ...).
 # They share the same ASCII remapping, so match the family suffix, not a name.

@@ -25,11 +25,14 @@ SIG = {"C": 0, "G": 1, "D": 2, "A": 3, "E": 4, "B": 5, "F#": 6, "C#": 7,
 ORDER = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
 
 # Sibelius music fonts remap ASCII; these are the glyphs that ride with a note.
-# Whole, half and quarter/eighth heads in both font encodings. Note that
-# \u00fa is a REST in some variants - it sits at a fixed staff position, so
-# including it would drag rests around with the notes.
-NOTEHEADS = set("w\u0153\u02d9\u00cf")
-ARTICULATIONS = set("^.>-_")                # accent, staccato, tenuto
+# Notehead glyphs across the Sibelius font variants and both encodings:
+# filled, hollow (minim) and cross heads. A hollow head often repeats at the
+# same staff position across phrases, so "sits at a fixed position" is NOT a
+# safe test for a rest - check for an attached stem instead.
+NOTEHEADS = set("w\u0153\u02d9\u00cf\u00fa\u00c0")
+# Flags, dots and articulations all hang off a notehead and must ride
+# with it, or they end up detached from the note they belong to.
+ARTICULATIONS = set("^.>-_jJ\u2019\u201a")                # accent, staccato, tenuto
 # A natural has to ride with its note too. Leaving it behind strands it on
 # the old staff position, and the note then takes whatever the new key
 # signature says - which is how a B natural became an A flat, not an A.
@@ -178,7 +181,7 @@ def glyph_map(page):
                     if c["c"] == " ":
                         continue
                     g[(round(c["origin"][0], 1), round(c["origin"][1], 1))] = (
-                        c["c"], s["font"].split("+")[-1], c["bbox"])
+                        c["c"], s["font"].split("+")[-1], c["bbox"], s["size"])
     return g
 
 
@@ -186,7 +189,7 @@ def first_note_x(page, gm, geom):
     """Left edge of real music on each staff (past clef + key signature)."""
     out = []
     for st in geom:
-        xs = [x for (x, y), (ch, fn, bb) in gm.items()
+        xs = [x for (x, y), (ch, fn, bb, *_r) in gm.items()
               if norm_glyph(ch) in NOTEHEADS
               and abs(y - (st["top"] + st["bot"]) / 2) < 40]
         out.append(min(xs) if xs else st["x0"] + 60)
@@ -208,9 +211,20 @@ def classify_glyph(ch, font, x, y, geom, notex):
         # answering for the wrong staff strands legitimate ledger notes.
         if not geom:
             return False
-        st = min(geom, key=lambda s: abs(y - (s["top"] + s["bot"]) / 2))
-        pos = (y - st["top"]) / st["half"]
-        return -9 <= pos <= 17 and abs(pos - round(pos)) <= 0.3
+        # Pick the staff whose GRID the note actually sits on, not merely the
+        # nearest one. A low treble ledger note can be closer to the bass staff
+        # while only fitting the treble grid; choosing by distance alone leaves
+        # it behind while its stem and beam move without it.
+        best = None
+        for st in geom:
+            pos = (y - st["top"]) / st["half"]
+            if not -12 <= pos <= 20:
+                continue
+            resid = abs(pos - round(pos))
+            dist = abs(y - (st["top"] + st["bot"]) / 2)
+            if resid <= 0.3 and (best is None or (resid, dist) < best[:2]):
+                best = (resid, dist, pos)
+        return best is not None and -12 <= best[2] <= 20
     if ch in ARTICULATIONS:
         return True
     if ch in ACCIDENTALS:
@@ -235,7 +249,7 @@ def keysig_edits(data, els, gm, geom, notex, H, dst_sig, half):
             if e.kind != "text" or len(e.glyphs) != 1:
                 continue
             x, y = e.glyphs[0][0], H - e.glyphs[0][1]
-            ch, fn = gm.get((round(x, 1), round(y, 1)), ("?", "?", None))[:2]
+            ch, fn = gm.get((round(x, 1), round(y, 1)), ("?", "?", None, 0))[:2]
             ch = norm_glyph(ch)
             if ch not in ACCIDENTALS or "Chords" in fn:
                 continue
@@ -267,7 +281,7 @@ def keysig_edits(data, els, gm, geom, notex, H, dst_sig, half):
         # A wider key signature needs room. Record how far the rest of the
         # header (time signature, repeat sign) must move right to clear it.
         endx = lx + (len(want) - len(acc)) * spacing + 5.3
-        hdr = [(gx, bb[2]) for (gx, gy), (c, f, bb) in gm.items()
+        hdr = [(gx, bb[2]) for (gx, gy), (c, f, bb, *_r) in gm.items()
                if abs(gy - mid) < 28 and lx + 1 < gx < nx - 0.5]
         nextx = min([g[0] for g in hdr], default=nx)
         # How far the header can move before it would collide with the first
@@ -367,13 +381,19 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
                 continue
             chars = list(e.text)
         else:
-            chars, ok = [], True
+            chars, ok, prev = [], True, None
             for x, y, f, cid in e.glyphs:
                 g = gm.get((round(x, 1), round(H - y, 1)))
                 if g is None or "Chords" not in g[1]:
                     ok = False
                     break
+                # Text extraction drops spaces, so a run holding two chords
+                # arrives glued together and only the first would transpose.
+                # A wide gap is the separator.
+                if prev is not None and x - prev > 9.0:
+                    chars.append(" ")
                 chars.append(g[0])
+                prev = x
             if not ok or not chars:
                 continue
         if not chars:
@@ -402,6 +422,12 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
                 break
             gap = ne.glyphs[0][0] - pe.glyphs[-1][0]
             if not (0 <= gap < 11):
+                break
+            # Distance alone glues two neighbouring chords into one symbol, and
+            # then only the first root gets transposed. A fresh root letter
+            # starts a new chord unless it follows a slash (a bass note).
+            nxt = items[j][1][:1]
+            if nxt and nxt in "ABCDEFG" and not grp[-1][1].endswith("/"):
                 break
             grp.append(items[j])
             j += 1
@@ -446,7 +472,9 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
                 # "1" - measure the drawn glyph instead of trusting either.
                 bb = gm.get((round(e.glyphs[0][0], 1),
                              round(H - e.glyphs[0][1], 1)))
-                size = (bb[2][3] - bb[2][1]) * 1.0 if bb and bb[2] else 10.0
+                # use the span's own point size; deriving it from the glyph
+                # bounding box makes the replacement noticeably larger
+                size = bb[3] if bb and len(bb) > 3 else 10.0
                 redraw.append({"x": e.glyphs[0][0],
                                "y": H - e.glyphs[0][1],
                                "text": new,
@@ -461,7 +489,7 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
     return edits, n, sorted(set(missed)), redraw
 
 
-def ledger_edits(subs, gm, geom, H, steps, half):
+def ledger_edits(subs, gm, geom, H, steps, half, want_new=None):
     """Recompute ledger lines instead of translating them.
 
     Ledger lines only exist at line positions (even staff indices outside the
@@ -470,8 +498,9 @@ def ledger_edits(subs, gm, geom, H, steps, half):
     line is collapsed to zero length.
     """
     edits = {}
-    notes = [(x, y) for (x, y), (ch, fn, bb) in gm.items()
-             if norm_glyph(ch) in NOTEHEADS and "Chords" not in fn]
+    notes = [(x, y) for (x, y), v in gm.items()
+             if norm_glyph(v[0]) in NOTEHEADS and "Chords" not in v[1]]
+    have = collections.defaultdict(set)     # (staff, x-bucket) -> slots present
     for ops in subs.values():
         pts = [p for o in ops for p in o.pts]
         xs = [p[0] for p in pts]
@@ -497,6 +526,7 @@ def ledger_edits(subs, gm, geom, H, steps, half):
                 tgt += list(range(10, nidx + 1, 2))
         tgt = sorted(set(tgt), key=abs)
         want = [t for t in tgt if (t < 0) == (idx < 0)]
+        have[(id(st), round(cx / 6))].update(want)
         # keep this line only if its rank still exists in the new stack
         rank = abs(idx) // 2 - (1 if idx < 0 else 5)
         rank = max(0, (abs(idx + 2) // 2) if idx < 0 else (idx - 10) // 2)
@@ -519,6 +549,30 @@ def ledger_edits(subs, gm, geom, H, steps, half):
                 if si < len(o.slots):
                     val, s0, s1 = o.slots[si]
                     edits[(s0, s1)] = b"%.5f" % (val + (-dy_page) / d)
+
+    # A note can move ONTO a ledger position that had no line before; without
+    # this the notehead floats above the staff with nothing under it.
+    if want_new is not None:
+        seen = collections.defaultdict(set)
+        for k, v in have.items():
+            seen[k] = v
+        for nx_, ny in notes:
+            st = min(geom, key=lambda g: abs(ny - (g["top"] + g["bot"]) / 2))
+            nidx = round((ny - st["top"]) / half) - steps
+            need = []
+            if nidx <= -2:
+                need = list(range(-2, nidx - 1, -2))
+            elif nidx >= 10:
+                need = list(range(10, nidx + 1, 2))
+            if not need:
+                continue
+            key = (id(st), round(nx_ / 6))
+            for slot in need:
+                if slot in seen.get(key, ()):  
+                    continue
+                seen.setdefault(key, set()).add(slot)
+                want_new.append({"x": nx_, "y": st["top"] + slot * half,
+                                 "half": half})
     return edits
 
 
@@ -572,15 +626,20 @@ def draw_keysig(page, geom, notex, src_sig, dst_sig, half, gm, pops=()):
         # The clef and existing signature are vector art, so find where that
         # art ends and start just after it - measuring from the first note
         # instead gives a different answer on every system.
+        # Anchor to the clef and existing signature, NOT to the first note.
+        # A bar that opens with rests puts its first note far to the right,
+        # which would strand the added accidentals in the middle of the bar.
         hx = st["x0"] + 12
         for o in pops:
             for px, py in o.pts:
                 ppy = page.rect.height - py
-                if abs(ppy - mid) < 22 and st["x0"] + 2 < px < nx - 2:
+                if abs(ppy - mid) < 22 and st["x0"] + 2 < px < st["x0"] + 70:
                     hx = max(hx, px)
-        x0 = hx + spacing * 0.55
-        if x0 + spacing * (len(add) - 1) > nx - 3.5:
-            x0 = max(st["x0"] + 12, nx - 3.5 - spacing * (len(add) - 1))
+        x0 = hx + spacing * 0.75
+        # never run into the music
+        limit = nx - 3.5 - spacing * (len(add) - 1)
+        if nx > st["x0"] + 30 and x0 > limit:
+            x0 = max(st["x0"] + 12, limit)
         for k, idx in enumerate(add):
             out.append({"x": x0 + k * spacing,
                         "y": st["top"] + idx * half,
@@ -662,7 +721,9 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
                     continue
                 val, s0, s1 = o.slots[si]
                 edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
-    edits.update(ledger_edits(subs, gm, geom, H, steps, half))
+    new_ledgers = []
+    edits.update(ledger_edits(subs, gm, geom, H, steps, half,
+                              want_new=new_ledgers))
 
     ce, ncho, miss, redraw = chord_edits(data, els, gm, H, steps, semis,
                                          dst_sig <= 0)
@@ -694,6 +755,11 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
                 edits[k] = edits.get(k, b"") + v if k[0] == k[1] else v
             stats["header_shift"] = round(dx, 2)
 
+    for L in new_ledgers:
+        redraw.append({"ledger": True, "x": L["x"], "y": L["y"],
+                       "half": L["half"]})
+    if new_ledgers:
+        stats["ledgers_added"] = len(new_ledgers)
     if verbose:
         print("   ", dict(stats))
     return edit(data, edits), stats, redraw
@@ -728,6 +794,12 @@ def main():
         for extra in xrefs[1:]:
             doc.update_stream(extra, b" ")
         for r in redraw:
+            if r.get("ledger"):
+                w = r["half"] * 2.3          # a ledger overhangs the notehead
+                page.draw_line((r["x"] - w * 0.35, r["y"]),
+                               (r["x"] + w, r["y"]),
+                               color=(0, 0, 0), width=r["half"] * 0.42)
+                continue
             page.insert_text((r["x"], r["y"]), r["text"], fontsize=r["size"],
                              fontfile=r["font"],
                              fontname="cf" + str(abs(hash(r["font"])) % 9999))

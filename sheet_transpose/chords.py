@@ -63,6 +63,8 @@ def transpose_glyphs(glyphs, steps, semis):
         out.append(g)
         if g == "/":
             at_name = True            # what follows a slash is the bass note
+        elif g.isspace():
+            at_name = True            # a run can hold several chords
         i += 1
     return out
 
