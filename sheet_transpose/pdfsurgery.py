@@ -53,7 +53,8 @@ def apply(m, x, y):
 class Element:
     """Drawing done inside one innermost q...Q, in PDF user space."""
     __slots__ = ("inject_at", "qstart", "qend", "ctm", "ctm0", "kind",
-                 "pts", "glyphs", "lw", "ops", "bt", "et", "standalone")
+                 "pts", "glyphs", "lw", "ops", "bt", "et", "standalone",
+                 "text", "font", "tm_slots")
 
     def __init__(self, inject_at, ctm):
         self.inject_at = inject_at
@@ -61,6 +62,9 @@ class Element:
         self.qend = None              # just after the matching 'Q'
         self.bt = self.et = None      # byte range of the BT...ET run, if any
         self.standalone = False       # text drawn outside any q...Q
+        self.text = ""                # decoded characters shown by this run
+        self.font = None
+        self.tm_slots = None          # operand byte ranges of this run's Tm
         self.ctm = ctm
         self.ctm0 = ctm      # CTM at the 'q', before this block's own cm
         self.kind = None
@@ -89,8 +93,15 @@ class PathOp:
         self.painted = ""
 
 
-def parse(data, base_ctm=(1, 0, 0, 1, 0, 0)):
-    """Return (elements, pathops)."""
+def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
+    """Return (elements, pathops).
+
+    `simple_fonts` names the resources that use single-byte encodings. A Type0
+    /Identity-H font packs two bytes per glyph, so decoding its strings as
+    Latin-1 would split one character into two - which is exactly how a minor
+    sign (CID 0x2039) turns into a space followed by a nine.
+    """
+    simple_fonts = simple_fonts or set()
     toks = tokenize(data)
     gstack = []
     ctm = base_ctm
@@ -155,6 +166,8 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0)):
                     standalone = False
         elif op == "Tm" and len(vals) >= 6:
             tm = tuple(vals[-6:])
+            if cur is not None and cur.tm_slots is None:
+                cur.tm_slots = operands[-6:]
         elif op in ("Td", "TD") and len(vals) >= 2 and tm is not None:
             tm = mat_mul((1, 0, 0, 1, vals[-2], vals[-1]), tm)
         elif op == "Tj" and tm is not None and cur is not None:
@@ -164,13 +177,18 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0)):
                 h = toks[i - 1][1][1:-1].replace(b" ", b"")
                 cid = int(h, 16) if h else None
             elif i and toks[i - 1][0] == "str":
-                # simple fonts show a literal string; the byte is the code
+                # A literal string can carry SEVERAL characters in one Tj, so
+                # the whole run has to be decoded - taking only the first byte
+                # silently loses chord accidentals and slash basses.
                 body = toks[i - 1][1][1:-1]
                 body = re.sub(rb"\\([0-7]{1,3})",
                               lambda m: bytes([int(m.group(1), 8) & 0xFF]), body)
                 body = re.sub(rb"\\(.)", rb"\1", body)
                 cid = body[0] if body else None
+                if font and font.lstrip("/") in simple_fonts:
+                    cur.text += body.decode("latin-1")
             cur.kind = cur.kind or "text"
+            cur.font = cur.font or font
             cur.glyphs.append((x, y, font, cid))
             cur.pts.append((x, y))
         elif op in NOPERANDS:

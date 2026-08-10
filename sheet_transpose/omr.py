@@ -11,8 +11,17 @@ MUSIC_FONT = ("Std", "MT", "Opus", "Inkpen", "Reprise", "Maestro",
               "Petrucci", "Sonata", "Jazz")
 
 
+# Companion faces shipped with the same families that carry ordinary text, not
+# notation. Treating them as music fonts makes letters like 'e' and 'w' look
+# like noteheads.
+NOT_MUSIC = ("Script", "Text", "Chords", "Arial", "Times", "Helvetica",
+             "Metronome", "Figured")
+
+
 def is_music_font(f):
-    return any(k in f for k in MUSIC_FONT) and "Arial" not in f and "Times" not in f
+    if any(k in f for k in NOT_MUSIC):
+        return False
+    return any(k in f for k in MUSIC_FONT)
 
 
 def is_chord_font(f):

@@ -344,23 +344,31 @@ def chord_edits(data, els, gm, H, steps, semis, flats):
     for e in els:
         if e.kind != "text" or not e.glyphs or e.bt is None:
             continue
-        chars, ok = [], True
-        for x, y, f, cid in e.glyphs:
-            g = gm.get((round(x, 1), round(H - y, 1)))
-            if g is None or "Chords" not in g[1]:
-                ok = False
-                break
-            chars.append(g[0])
-        if not ok or not chars:
+        # A single Tj can show several characters, so trust the decoded run
+        # text when the parser has it and only fall back to per-glyph lookups.
+        first = gm.get((round(e.glyphs[0][0], 1), round(H - e.glyphs[0][1], 1)))
+        if e.text:
+            if not first or "Chords" not in first[1]:
+                continue
+            chars = list(e.text)
+        else:
+            chars, ok = [], True
+            for x, y, f, cid in e.glyphs:
+                g = gm.get((round(x, 1), round(H - y, 1)))
+                if g is None or "Chords" not in g[1]:
+                    ok = False
+                    break
+                chars.append(g[0])
+            if not ok or not chars:
+                continue
+        if not chars:
             continue
         bt = data[e.bt:e.et]
         tds = [float(m.group(1)) for m in TD_RE.finditer(bt)]
         # each Td after the first is the advance of the glyph before it
         deltas = (tds[1:] + [None])[:len(chars)]
         runs.append((chars, [g[3] for g in e.glyphs], deltas))
-        fn = gm.get((round(e.glyphs[0][0], 1),
-                     round(H - e.glyphs[0][1], 1)))[1]
-        items.append((e, "".join(chars), fn))
+        items.append((e, "".join(chars), first[1]))
 
     # Some exports emit one BT block per character, so "Bb" arrives as two
     # separate elements. Merge neighbours on the same line into one symbol,
@@ -499,10 +507,71 @@ def ledger_edits(subs, gm, geom, H, steps, half):
     return edits
 
 
+def simple_font_resources(page):
+    """Resource names whose fonts use one byte per glyph."""
+    out = set()
+    for f in page.get_fonts(full=True):
+        if f[2] != "Type0":
+            out.add(f[4])
+    return out
+
+
+
+def draw_keysig(page, geom, notex, src_sig, dst_sig, half, gm, pops=()):
+    """Draw the accidentals a staff needs when its key signature is vector art.
+
+    Some exports draw the clef and key signature as paths rather than glyphs,
+    so there is nothing to clone or erase. The signature still has to change,
+    so the extra accidentals are drawn with the installed music font.
+    """
+    if src_sig == dst_sig or (src_sig < 0) != (dst_sig < 0) and src_sig and dst_sig:
+        return []
+    if abs(dst_sig) <= abs(src_sig):
+        return []                       # removing vector accidentals is not possible
+    font = None
+    for f in page.get_fonts(full=True):
+        if is_music_font(f[3]) and not is_chord_font(f[3]) \
+           and "Script" not in f[3] and "Text" not in f[3] \
+           and "Special" not in f[3]:
+            font = CH.find_full_font(f[3])
+            if font:
+                break
+    if not font:
+        return []
+    glyph = "b" if dst_sig < 0 else "#"
+    out = []
+    for st, nx in zip(geom, notex):
+        mid = (st["top"] + st["bot"]) / 2
+        bass = False                    # vector clefs: assume treble
+        want = positions(dst_sig, bass)
+        add = want[abs(src_sig):]       # the ones not already printed
+        if not add:
+            continue
+        spacing = 2.258 * half
+        size = half * 8.0               # one staff height, as the font expects
+        # The clef and existing signature are vector art, so find where that
+        # art ends and start just after it - measuring from the first note
+        # instead gives a different answer on every system.
+        hx = st["x0"] + 12
+        for o in pops:
+            for px, py in o.pts:
+                ppy = page.rect.height - py
+                if abs(ppy - mid) < 22 and st["x0"] + 2 < px < nx - 2:
+                    hx = max(hx, px)
+        x0 = hx + spacing * 0.55
+        if x0 + spacing * (len(add) - 1) > nx - 3.5:
+            x0 = max(st["x0"] + 12, nx - 3.5 - spacing * (len(add) - 1))
+        for k, idx in enumerate(add):
+            out.append({"x": x0 + k * spacing,
+                        "y": st["top"] + idx * half,
+                        "text": glyph, "size": size, "font": font,
+                        "keysig": True})
+    return out
+
 def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
     H = page.rect.height
     data = page.read_contents()
-    els, pops = parse(data)
+    els, pops = parse(data, simple_fonts=simple_font_resources(page))
     geom = staff_geom(page)
     if not geom:
         return None, {}, []
@@ -528,15 +597,15 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
         d = e.ctm0[3]
         if abs(d) < 1e-9:
             continue
-        shift = b" 1 0 0 1 0 %.5f cm " % (dy_user / d)
-        if e.standalone:
-            # Text outside q...Q has nothing to restore the CTM, so an
-            # unbracketed cm would leak into every element after it and the
-            # displacement would accumulate down the page. Bracket it.
-            edits[(e.inject_at, e.inject_at)] = b" q" + shift
-            edits[(e.et, e.et)] = b" Q "
+        if e.standalone and e.tm_slots and len(e.tm_slots) >= 6:
+            # Text drawn outside q...Q: move it by rewriting its own text
+            # matrix. Wrapping it in q/Q instead would disturb the graphics
+            # state and can un-hide glyphs the original had clipped away.
+            val, s0, s1 = e.tm_slots[5]
+            edits[(s0, s1)] = b"%.5f" % (val + dy_user / d)
         else:
-            edits[(e.inject_at, e.inject_at)] = shift
+            edits[(e.inject_at, e.inject_at)] = (
+                b" 1 0 0 1 0 %.5f cm " % (dy_user / d))
         stats["glyph"] += len(e.glyphs)
 
     # ---- paths: rewrite the y operand of moving subpaths
@@ -577,6 +646,11 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
             edits[key] = edits.get(key, b"") + payload
             stats["keysig_added"] += 1
         stats["keysig_removed"] += len(blanks)
+        if not ins and not blanks:
+            vk = draw_keysig(page, geom, notex, src_sig, dst_sig, half, gm, pops)
+            redraw.extend(vk)
+            if vk:
+                stats["keysig_drawn"] = len(vk)
         if warn:
             # one shift for the whole page keeps systems aligned with each other
             zones = [(w[1], w[2], w[3], min(w[0], w[4])) for w in warn]
