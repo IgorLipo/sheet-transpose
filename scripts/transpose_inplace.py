@@ -30,7 +30,11 @@ ORDER = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
 # including it would drag rests around with the notes.
 NOTEHEADS = set("w\u0153\u02d9\u00cf")
 ARTICULATIONS = set("^.>-_")                # accent, staccato, tenuto
-ACCIDENTALS = {"b": -1, "#": 1, "♭": -1, "♯": 1}
+# A natural has to ride with its note too. Leaving it behind strands it on
+# the old staff position, and the note then takes whatever the new key
+# signature says - which is how a B natural became an A flat, not an A.
+ACCIDENTALS = {"b": -1, "#": 1, "n": 0,
+               "\u266d": -1, "\u266f": 1, "\u266e": 0}
 
 
 def parse_key(name):
@@ -198,14 +202,25 @@ def classify_glyph(ch, font, x, y, geom, notex):
     if "Script" in font or "Text" in font:
         return False
     ch = norm_glyph(ch)
-    if ch in NOTEHEADS or ch in ARTICULATIONS:
+    if ch in NOTEHEADS:
+        # A notehead sits on the staff grid. Judge it against the NEAREST staff:
+        # on a grand staff an adjacent one is often within range too, and
+        # answering for the wrong staff strands legitimate ledger notes.
+        if not geom:
+            return False
+        st = min(geom, key=lambda s: abs(y - (s["top"] + s["bot"]) / 2))
+        pos = (y - st["top"]) / st["half"]
+        return -9 <= pos <= 17 and abs(pos - round(pos)) <= 0.3
+    if ch in ARTICULATIONS:
         return True
     if ch in ACCIDENTALS:
         # A key-signature accidental sits far left of the first note; one that
         # belongs to a note hugs it. Only the latter rides with the music.
-        for st, nx in zip(geom, notex):
-            if abs(y - (st["top"] + st["bot"]) / 2) < 40:
-                return x >= nx - 12
+        if not geom:
+            return False
+        i = min(range(len(geom)),
+                key=lambda k: abs(y - (geom[k]["top"] + geom[k]["bot"]) / 2))
+        return x >= notex[i] - 12
     return False
 
 
@@ -507,6 +522,11 @@ def ledger_edits(subs, gm, geom, H, steps, half):
     return edits
 
 
+def resource_fonts(page):
+    """Map a content-stream resource name to its base font name."""
+    return {f[4]: f[3].split("+")[-1] for f in page.get_fonts(full=True)}
+
+
 def simple_font_resources(page):
     """Resource names whose fonts use one byte per glyph."""
     out = set()
@@ -576,6 +596,7 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
     if not geom:
         return None, {}, []
     gm = glyph_map(page)
+    resfonts = resource_fonts(page)
     notex = first_note_x(page, gm, geom)
     half = geom[0]["half"]
     dy_page = -steps * half          # steps<0 (down) -> positive page dy
@@ -588,10 +609,23 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
     for e in els:
         if e.kind != "text" or not e.glyphs:
             continue
-        move = all(classify_glyph(*gm.get((round(x, 1), round(H - y, 1)),
-                                          ("?", "?", None))[:2], x, H - y,
-                                  geom, notex)
-                   for x, y, _, _ in e.glyphs)
+        # Text extraction silently omits some glyphs (overprinted noteheads,
+        # for one). Falling back to the run text the parser decoded keeps those
+        # notes in the transposition instead of stranding them at the old pitch.
+        move = True
+        for gi, (x, y, gf, cid) in enumerate(e.glyphs):
+            g = gm.get((round(x, 1), round(H - y, 1)))
+            if g is not None:
+                ch, fn = g[0], g[1]
+            elif e.text and gi < len(e.text):
+                ch = e.text[gi]
+                fn = resfonts.get((gf or "").lstrip("/"), "")
+            else:
+                move = False
+                break
+            if not classify_glyph(ch, fn, x, H - y, geom, notex):
+                move = False
+                break
         if not move:
             continue
         d = e.ctm0[3]
