@@ -226,7 +226,10 @@ def parse(data, base_ctm=(1, 0, 0, 1, 0, 0), simple_fonts=None):
 
 def edit(data, edits):
     """Apply {(start, end): replacement_bytes} and injections {offset: bytes}."""
-    items = sorted(edits.items(), key=lambda kv: kv[0][0])
+    # Sort on the whole (start, end) key: an injection at offset n is (n, n)
+    # and must be emitted before a replacement that starts at the same offset,
+    # or the injection is silently dropped as overlapping.
+    items = sorted(edits.items(), key=lambda kv: kv[0])
     out = bytearray()
     last = 0
     for (s, e), rep in items:

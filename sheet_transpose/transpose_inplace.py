@@ -238,10 +238,72 @@ def classify_glyph(ch, font, x, y, geom, notex):
     return False
 
 
-def keysig_edits(data, els, gm, geom, notex, H, dst_sig, half):
-    """Add or remove key-signature accidentals so the staff shows `dst_sig`."""
-    ins, blanks, warn = [], {}, []
-    spacing = 2.258 * half                      # authentic Sibelius spacing
+GAP = 1.0          # clearance the key signature must leave before the next item
+# Only a time signature or a start-repeat can follow a key signature, and both
+# are narrow. Anything further right than this is music - a bar-repeat sign or
+# a rest - which must neither move nor be mistaken for something that can.
+HEADER_REACH = 20.0
+
+
+def first_music_x(gm, st, lx, nx, hi_x, skip=()):
+    """Leftmost music that is not part of the header, i.e. what it may not hit.
+
+    `notex` only sees noteheads, so a bar opening with a rest or a bar-repeat
+    sign reports its first note far to the right and the header looks free to
+    expand over the top of it.
+    """
+    lo = st["top"] - 2.5 * st["half"]
+    hi = st["bot"] + 2.5 * st["half"]
+    xs = [gx for (gx, gy), (c, f, bb, *_r) in gm.items()
+          if lo <= gy <= hi and hi_x <= gx < nx
+          and (round(gx, 1), round(gy, 1)) not in skip
+          and is_music_font(f) and not is_chord_font(f)]
+    return min(xs, default=nx)
+
+
+def header_items(page, gm, st, lx, nx, skip=()):
+    """Ink drawn between the key signature and the first note of this staff.
+
+    Only what shares the staff counts. A chord symbol floats above it and is
+    tied to a note, so treating it as header content both understates the room
+    available and drags the symbol away from the note it names. `skip` holds
+    the signature's own accidentals, which are what we are making room for.
+    """
+    lo = st["top"] - 2.5 * st["half"]
+    hi = st["bot"] + 2.5 * st["half"]
+    out = []
+    for (gx, gy), (c, f, bb, *_r) in gm.items():
+        if lo <= gy <= hi and lx + 1 < gx < nx - 0.5 \
+           and (round(gx, 1), round(gy, 1)) not in skip \
+           and is_music_font(f) and not is_chord_font(f):
+            out.append((gx, bb[2]))
+    for d in page.get_drawings():
+        r = d["rect"]
+        if d["type"] != "s" and r.width < 40 \
+           and lx + 1 < r.x0 < nx - 0.5 and lo <= (r.y0 + r.y1) / 2 <= hi:
+            out.append((r.x0, r.x1))
+    return sorted(out)
+
+
+def clef_right(gm, st, lx):
+    """Right edge of the clef, the leftmost the key signature may start."""
+    lo = st["top"] - 2.5 * st["half"]
+    hi = st["bot"] + 2.5 * st["half"]
+    xs = [bb[2] for (gx, gy), (c, f, bb, *_r) in gm.items()
+          if lo <= gy <= hi and st["x0"] - 1 < gx < lx - 0.5
+          and is_music_font(f) and not is_chord_font(f)]
+    return max(xs) if xs else st["x0"] + 4.0
+
+
+def keysig_plan(page, els, gm, geom, notex, H, dst_sig, half):
+    """Where every key-signature accidental should end up, and at what size.
+
+    Widening a signature is the only edit in a transposition that needs
+    horizontal room. Each staff reports how much it has; the tightest one on
+    the page sets a single scale, because signatures of different sizes on one
+    page look like a mistake.
+    """
+    plans, scale = [], 1.0
     for st, nx in zip(geom, notex):
         mid = (st["top"] + st["bot"]) / 2
         acc = []
@@ -249,14 +311,16 @@ def keysig_edits(data, els, gm, geom, notex, H, dst_sig, half):
             if e.kind != "text" or len(e.glyphs) != 1:
                 continue
             x, y = e.glyphs[0][0], H - e.glyphs[0][1]
-            ch, fn = gm.get((round(x, 1), round(y, 1)), ("?", "?", None, 0))[:2]
+            ch, fn, bb = gm.get((round(x, 1), round(y, 1)),
+                                ("?", "?", (0, 0, 0, 0), 0))[:3]
             ch = norm_glyph(ch)
-            if ch not in ACCIDENTALS or "Chords" in fn:
+            if ch not in ACCIDENTALS or not is_music_font(fn) \
+               or is_chord_font(fn):
                 continue
             # A key-signature accidental sits in the staff header, immediately
             # after the clef - not merely anywhere left of the first note.
             if abs(y - mid) < 28 and x < nx - 12 and x < st["x0"] + 95:
-                acc.append((x, y, e))
+                acc.append((x, y, e, bb[2] - bb[0]))
         if not acc:
             # Nothing to clone from and nothing to remove: this staff prints no
             # key signature (common on continuation systems and on charts that
@@ -266,31 +330,61 @@ def keysig_edits(data, els, gm, geom, notex, H, dst_sig, half):
         idx0 = round((acc[0][1] - st["top"]) / half)
         bass = idx0 >= 6                        # first flat: treble 4, bass 6
         want = positions(dst_sig, bass)
-        if len(acc) > 1:
-            spacing = acc[1][0] - acc[0][0]
-        if len(want) < len(acc):                # fewer accidentals: erase extras
-            for _, _, e in acc[len(want):]:
-                blanks[(e.qstart, e.qend)] = b" "
-            continue
-        lx, ly, le = acc[-1]
-        lidx = round((ly - st["top"]) / half)
-        for i in range(len(acc), len(want)):
-            dx = (i - (len(acc) - 1)) * spacing
-            dy_page = (want[i] - lidx) * half
-            ins.append((le.qstart, clone(data, le, dx, -dy_page)))
-        # A wider key signature needs room. Record how far the rest of the
-        # header (time signature, repeat sign) must move right to clear it.
-        endx = lx + (len(want) - len(acc)) * spacing + 5.3
-        hdr = [(gx, bb[2]) for (gx, gy), (c, f, bb, *_r) in gm.items()
-               if abs(gy - mid) < 28 and lx + 1 < gx < nx - 0.5]
-        nextx = min([g[0] for g in hdr], default=nx)
-        # How far the header can move before it would collide with the first
-        # note. Without this cap the repeat dots get pushed on top of the music.
+        spacing = acc[1][0] - acc[0][0] if len(acc) > 1 else 2.258 * half
+        lx, width = acc[0][0], max(a[3] for a in acc)
+        skip = {(round(a[0], 1), round(a[1], 1)) for a in acc}
+        ksend = max(a[0] + a[3] for a in acc)
+        limit = first_music_x(gm, st, lx, nx, ksend + HEADER_REACH, skip)
+        hdr = [g for g in header_items(page, gm, st, lx, nx, skip)
+               if g[0] < limit]
+        nextx = min([g[0] for g in hdr], default=limit)
+        # How far that header content may move before it would collide with the
+        # first note. Without this cap the repeat dots land on top of the music.
         right = max([g[1] for g in hdr], default=lx)
-        cap = max(0.0, nx - right - 1.0)
-        if endx + 1.0 > nextx:
-            warn.append((endx + 1.0 - nextx, lx, nx, mid, cap))
-    return ins, blanks, warn
+        cap = max(0.0, limit - right - GAP) if hdr else 0.0
+        # width the signature needs at full size, and what it can be given
+        need = (len(want) - 1) * spacing + width + GAP if want else 0.0
+        shift = min(cap, max(0.0, need - (nextx - lx)))
+        if want and need > nextx + shift - lx:
+            # Still short: close the gap the engraver left between the clef and
+            # the signature before resorting to drawing it smaller.
+            short = need - (nextx + shift - lx)
+            lx = min(lx, max(clef_right(gm, st, lx) + 0.75, lx - short))
+        room = nextx + shift - lx
+        if want and need > room:
+            scale = min(scale, max(0.55, (room - GAP) /
+                                   max(need - GAP, 1e-6)))
+        plans.append({"st": st, "acc": acc, "want": want, "spacing": spacing,
+                      "lx": lx, "shift": shift, "nx": limit,
+                      "lo": st["top"] - 2.5 * st["half"],
+                      "hi": st["bot"] + 2.5 * st["half"]})
+    return plans, scale
+
+
+def keysig_edits(data, plans, scale, half, H):
+    """Add, move or erase key-signature accidentals to match the plan."""
+    ins, blanks, zones = [], {}, []
+    for p in plans:
+        st, acc, want = p["st"], p["acc"], p["want"]
+        spacing = p["spacing"] * scale
+        for _, _, e, _ in acc[len(want):]:       # fewer accidentals than before
+            blanks[(e.qstart, e.qend)] = b" "
+        for i, idx in enumerate(want):
+            tx = p["lx"] + i * spacing
+            ty = st["top"] + idx * half
+            if i < len(acc):
+                sx, sy, e, _ = acc[i]
+                if scale == 1.0 and abs(tx - sx) < 0.05 and abs(ty - sy) < 0.05:
+                    continue                     # already in the right place
+                blanks[(e.qstart, e.qend)] = b" "
+            else:
+                sx, sy, e, _ = acc[-1]
+            ins.append((e.qstart,
+                        clone(data, e, tx - sx, sy - ty, scale,
+                              (sx, H - sy))))
+        if p["shift"] > 0:
+            zones.append((p["lx"], p["nx"], p["lo"], p["hi"], p["shift"]))
+    return ins, blanks, zones
 
 
 def header_shift(els, pops, gm, geom, notex, H, zones):
@@ -305,8 +399,8 @@ def header_shift(els, pops, gm, geom, notex, H, zones):
 
     def zone_dx(x, y):
         """Shift for a point, or None if it is not header content."""
-        hits = [d for lx, nx, mid, d in zones
-                if abs(y - mid) < 34 and lx + 1 < x < nx - 0.5]
+        hits = [d for lx, nx, lo, hi, d in zones
+                if lo <= y <= hi and lx + 1 < x < nx - 0.5]
         return min(hits) if hits else None
 
     for e in els:
@@ -647,7 +741,30 @@ def draw_keysig(page, geom, notex, src_sig, dst_sig, half, gm, pops=()):
                         "keysig": True})
     return out
 
-def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
+def keysig_scale(doc, src_sig, dst_sig):
+    """The smallest key-signature scale any page needs, so all pages match.
+
+    Sizing each page on its own puts a full-size signature on one page and a
+    squeezed one on the next, which reads as a printing fault.
+    """
+    if src_sig == dst_sig:
+        return 1.0
+    s = 1.0
+    for page in doc:
+        geom = staff_geom(page)
+        if not geom:
+            continue
+        gm = glyph_map(page)
+        els, _ = parse(page.read_contents(),
+                       simple_fonts=simple_font_resources(page))
+        _, ps = keysig_plan(page, els, gm, geom, first_note_x(page, gm, geom),
+                            page.rect.height, dst_sig, geom[0]["half"])
+        s = min(s, ps)
+    return s
+
+
+def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
+                   scale=1.0):
     H = page.rect.height
     data = page.read_contents()
     els, pops = parse(data, simple_fonts=simple_font_resources(page))
@@ -733,27 +850,28 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False):
         stats["chords_unavailable"] = ",".join(miss)
 
     if src_sig != dst_sig:
-        ins, blanks, warn = keysig_edits(data, els, gm, geom, notex, H,
-                                         dst_sig, half)
+        plans, page_scale = keysig_plan(page, els, gm, geom, notex, H,
+                                        dst_sig, half)
+        ks_scale = min(page_scale, scale if scale else 1.0)
+        ins, blanks, zones = keysig_edits(data, plans, ks_scale, half, H)
         edits.update(blanks)
         for off, payload in ins:
             key = (off, off)
             edits[key] = edits.get(key, b"") + payload
             stats["keysig_added"] += 1
         stats["keysig_removed"] += len(blanks)
-        if not ins and not blanks:
+        if ks_scale < 1.0:
+            stats["keysig_scale"] = round(ks_scale, 3)
+        if not plans:
             vk = draw_keysig(page, geom, notex, src_sig, dst_sig, half, gm, pops)
             redraw.extend(vk)
             if vk:
                 stats["keysig_drawn"] = len(vk)
-        if warn:
-            # one shift for the whole page keeps systems aligned with each other
-            zones = [(w[1], w[2], w[3], min(w[0], w[4])) for w in warn]
-            dx = max(z[3] for z in zones)
+        if zones:
             hs = header_shift(els, pops, gm, geom, notex, H, zones)
             for k, v in hs.items():
                 edits[k] = edits.get(k, b"") + v if k[0] == k[1] else v
-            stats["header_shift"] = round(dx, 2)
+            stats["header_shift"] = round(max(z[4] for z in zones), 2)
 
     for L in new_ledgers:
         redraw.append({"ledger": True, "x": L["x"], "y": L["y"],
@@ -780,9 +898,13 @@ def main():
           f"   key sig {s_sig} -> {d_sig}")
 
     doc = pymupdf.open(a.pdf)
+    ks = keysig_scale(doc, s_sig, d_sig)
+    if ks < 1.0:
+        print(f"  key signature drawn at {ks:.0%} to fit the space the "
+              f"engraver left")
     for i, page in enumerate(doc):
         new, st, redraw = transpose_page(page, steps, s_sig, d_sig, semis,
-                                         a.verbose)
+                                         a.verbose, scale=ks)
         if new is None:
             print(f"  page {i+1}: no staves found, left unchanged")
             continue

@@ -38,17 +38,25 @@ def positions(sig, bass):
     return [table[n] + off for n in order[:abs(sig)]]
 
 
-def clone(data, el, dx_user, dy_user):
+def clone(data, el, dx_user, dy_user, scale=1.0, anchor=None):
     """Bytes that redraw element `el` displaced by (dx_user, dy_user).
 
     Inserted at el.qstart, where the CTM is el.ctm0, so the clone's matrix is
     chosen to land the glyph exactly where we want regardless of nesting.
+
+    `scale` shrinks the glyph about `anchor` (a point in user space, normally
+    the glyph's own origin) before the displacement. A key signature that has
+    grown more accidentals than the engraver left room for has to be drawn
+    smaller; the alternative is printing it on top of the time signature.
     """
     inv = inverse(el.ctm0)
     if inv is None:
         return b""
-    target = (el.ctm[0], el.ctm[1], el.ctm[2], el.ctm[3],
-              el.ctm[4] + dx_user, el.ctm[5] + dy_user)
+    ax, ay = anchor if anchor else (0.0, 0.0)
+    # user-space map: shrink about the anchor, then displace
+    k = (scale, 0.0, 0.0, scale,
+         ax * (1 - scale) + dx_user, ay * (1 - scale) + dy_user)
+    target = mat_mul(el.ctm, k)
     a = mat_mul(target, inv)
     inner = data[el.qstart:el.qend]
     return (b" q %.6f %.6f %.6f %.6f %.6f %.6f cm " % a) + inner + b" Q "
