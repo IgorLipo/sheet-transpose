@@ -965,15 +965,28 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                         or CH.find_full_font("Inkpen2ChordsStd"))
                 if full:
                     for pc in group:
-                        if pc.span:
-                            edits[pc.span] = b" "
-                    bb = gm.get((round(e.glyphs[0][0], 1),
-                                 round(H - e.glyphs[0][1], 1)))
+                        if not pc.span:
+                            continue
+                        s0, s1 = pc.span
+                        snippet = data[s0:s1]
+                        m2 = STR_RE.search(snippet)
+                        rep = b" "
+                        if m2 and m2.end() >= len(snippet.rstrip()):
+                            # a TJ-array item: erasing it erases its ADVANCE
+                            # and every chord after it slides left. Leave a
+                            # kern number carrying the erased glyphs' width.
+                            dw = sum(emw.get(c, 500) for c in pc.text
+                                     if c != " ")
+                            rep = b" %.2f " % (-dw)
+                        edits[pc.span] = rep
+                    g0 = group[0]
+                    gx0 = g0.e.glyphs[g0.gis[0]][0]
+                    gy0 = H - g0.e.glyphs[g0.gis[0]][1]
+                    bb = gm.get((round(gx0, 1), round(gy0, 1)))
                     size = bb[3] if bb and len(bb) > 3 else 10.0
-                    redraw.append({"x": e.glyphs[0][0],
-                                   "y": H - e.glyphs[0][1],
+                    redraw.append({"x": gx0, "y": gy0,
                                    "text": new.replace("b", "\u00a8")
-                                              .replace("#", "\u00ab"),
+                                              .replace("#", "\u00a9"),
                                    "size": max(4.0, size), "font": full})
                     n += 1
                 else:
@@ -1749,9 +1762,11 @@ def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
             if not ride and norm_glyph(ch) == "\u00aa":
                 # An augmentation dot rides with its notehead; the repeat-
                 # colon uses the same glyph but sits beside a barline with
-                # no notehead at exactly its height just to the left.
+                # no notehead just to its left. A line-note's dot is engraved
+                # in the SPACE above the head, so allow one half-step.
                 py = H - y
-                ride = any(2.0 < x - hx < 13.0 and abs(hy - py) < 0.8
+                ride = any(2.0 < x - hx < 13.0
+                           and abs(hy - py) < half * 1.15
                            for hx, hy in dot_heads)
             flags.append(ride)
         if not any(flags):
