@@ -219,7 +219,40 @@ async def transpose(token: str = Form(None), chart_id: str = Form(None),
             "warnings": warn}
 
 
+def pick_page(token, info):
+    """The key chooser, served when a request arrives without one.
+
+    A Shortcut that fails to fill in the key is not a dead end: the chart is
+    already on the server, so all that is missing is the tap that names the
+    destination, and a page can ask for that where a share sheet cannot.
+    """
+    src = info.get("key") or "?"
+    minor = src.endswith("m")
+    names = [k + ("m" if minor else "") for k in KEYS]
+    title = (info.get("title") or "chart").replace("<", "")
+    keys = "".join(
+        f'<a class=k href="/api/pick/{token}/{n}?k={TOKEN}">{n}</a>'
+        for n in names if n != src)
+    return f"""<!DOCTYPE html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pick a key</title><style>
+*{{box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
+body{{margin:0;background:#07070A;color:#F2F3F7;padding:26px 18px;
+ font:17px/1.4 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}}
+h1{{font:600 22px/1.2 -apple-system;margin:0 0 4px;letter-spacing:-.02em}}
+p{{color:rgba(242,243,247,.5);margin:0 0 22px;font-size:14px}}
+.g{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}
+.k{{display:grid;place-items:center;height:64px;border-radius:16px;
+ text-decoration:none;color:#fff;font:600 20px -apple-system;
+ background:linear-gradient(160deg,#5E9BFF,#9C6BFF);
+ box-shadow:0 6px 18px rgba(94,155,255,.34)}}
+.k:active{{transform:scale(.95)}}
+</style><h1>{title}</h1><p>Now in {src} &middot; tap the key you want</p>
+<div class=g>{keys}</div>"""
+
+
 @app.post("/api/quick/{dst}")
+@app.post("/api/quick/")
 @app.post("/api/quick")
 async def quick(request: Request, dst: str = None):
     """One round trip for the iOS Shortcut: PDF in, transposed PDF out.
@@ -249,12 +282,15 @@ async def quick(request: Request, dst: str = None):
     dst = (dst or form.get("dst") or q.get("dst") or "").strip()
     src = form.get("src") or q.get("src")
     if not dst:
-        # a Shortcut whose key picker did not resolve sends dst= empty, and a
-        # bare 422 shows the player nothing at all
-        raise HTTPException(422, "No target key came through. Re-add the "
-                                 "shortcut from the install page.")
-    if not body:
-        raise HTTPException(422, "no chart in the request")
+        # No key came through - a Shortcut token that did not resolve. Rather
+        # than fail where the share sheet shows nothing, park the chart and
+        # send back a page that asks for the key, which works in any browser.
+        if not body:
+            raise HTTPException(422, "no chart in the request")
+        held = OUT / f"an-{uuid.uuid4().hex}.pdf"
+        held.write_bytes(body)
+        info = detect(str(held))
+        return HTMLResponse(pick_page(held.name, info))
     tmp = OUT / f"an-{uuid.uuid4().hex}.pdf"
     tmp.write_bytes(body)
     info = detect(str(tmp))
@@ -268,6 +304,28 @@ async def quick(request: Request, dst: str = None):
                    or (file.filename or "chart").rsplit(".", 1)[0])[:60] or "chart"
     outpdf = OUT / f"{title} [{dst}] {uuid.uuid4().hex[:6]}.pdf"
     r = subprocess.run([PY, "-m", "sheet_transpose", str(tmp), "--from", src,
+                        "--to", dst, "-o", str(outpdf)],
+                       capture_output=True, text=True, cwd=str(ROOT))
+    if not outpdf.exists():
+        raise HTTPException(500, (r.stdout + r.stderr)[-800:] or "transpose failed")
+    remember_output(outpdf.name, title, src, dst)
+    return FileResponse(outpdf, media_type="application/pdf",
+                        filename=outpdf.name)
+
+
+@app.get("/api/pick/{token}/{dst}")
+def pick(token: str, dst: str):
+    """Finish a run that arrived without a key: transpose and hand back the PDF."""
+    srcpdf = OUT / token
+    if not srcpdf.exists():
+        raise HTTPException(404, "that chart is no longer here")
+    info = detect(str(srcpdf))
+    src = info.get("key")
+    if not src:
+        raise HTTPException(422, "could not read the key")
+    title = re.sub(r"[^\w\- ]", "", info.get("title") or "chart")[:60] or "chart"
+    outpdf = OUT / f"{title} [{dst}] {uuid.uuid4().hex[:6]}.pdf"
+    r = subprocess.run([PY, "-m", "sheet_transpose", str(srcpdf), "--from", src,
                         "--to", dst, "-o", str(outpdf)],
                        capture_output=True, text=True, cwd=str(ROOT))
     if not outpdf.exists():

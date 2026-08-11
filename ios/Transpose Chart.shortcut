@@ -8,26 +8,13 @@
 	<array>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
-			<string>is.workflow.actions.ask</string>
-			<key>WFWorkflowActionParameters</key>
-			<dict>
-				<key>UUID</key>
-				<string>9F450353-ADD9-4C99-8653-1FA6A839ACE2</string>
-				<key>WFAskActionPrompt</key>
-				<string>Transpose to which key?</string>
-				<key>WFInputType</key>
-				<string>Text</string>
-			</dict>
-		</dict>
-		<dict>
-			<key>WFWorkflowActionIdentifier</key>
 			<string>is.workflow.actions.downloadurl</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>ShowHeaders</key>
 				<false/>
 				<key>UUID</key>
-				<string>532AA103-683B-428A-8C75-70233DA3F5E1</string>
+				<string>F66AD954-3DBA-46BE-9D52-9569B00DF835</string>
 				<key>WFHTTPBodyType</key>
 				<string>File</string>
 				<key>WFHTTPMethod</key>
@@ -43,38 +30,16 @@
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>WFURL</key>
-				<dict>
-					<key>Value</key>
-					<dict>
-						<key>attachmentsByRange</key>
-						<dict>
-							<key>40</key>
-							<dict>
-								<key>OutputName</key>
-								<string>Provided Input</string>
-								<key>OutputUUID</key>
-								<string>9F450353-ADD9-4C99-8653-1FA6A839ACE2</string>
-								<key>Type</key>
-								<string>ActionOutput</string>
-							</dict>
-						</dict>
-						<key>string</key>
-						<string>https://air.tailfe12dc.ts.net/api/quick/￼?k=AWEYcvNTECYFfPTrk2PZDaJl</string>
-					</dict>
-					<key>WFSerializationType</key>
-					<string>WFTextTokenString</string>
-				</dict>
+				<string>https://air.tailfe12dc.ts.net/api/quick/?k=AWEYcvNTECYFfPTrk2PZDaJl</string>
 			</dict>
 		</dict>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
-			<string>is.workflow.actions.openin</string>
+			<string>is.workflow.actions.previewdocument</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>3FEEF151-9D70-4598-957F-E35F6138275C</string>
-				<key>WFOpenInAskWhenRun</key>
-				<true/>
+				<string>FD44F1EB-E847-4281-B1E9-400C1E7F329E</string>
 			</dict>
 		</dict>
 	</array>
