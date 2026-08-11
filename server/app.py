@@ -399,9 +399,11 @@ async def quick(request: Request, dst: str = None):
     src = src or info.get("key")
     if not src:
         raise HTTPException(422, info.get("error") or "could not read the key")
-    # match the tonic mode: a minor chart goes to a minor destination
+    # Match the tonic mode: a minor chart goes to a minor destination. Drop
+    # exactly ONE trailing m - rstrip("m") eats them all, so a request for Cm
+    # against a minor chart came back as C major.
     if src.endswith("m") != dst.endswith("m"):
-        dst = dst + "m" if src.endswith("m") else dst.rstrip("m")
+        dst = dst + "m" if src.endswith("m") else dst[:-1]
     title = re.sub(r"[^\w\- ]", "", info.get("title")
                    or (file.filename or "chart").rsplit(".", 1)[0])[:60] or "chart"
     outpdf = OUT / f"{title} [{dst}] {uuid.uuid4().hex[:6]}.pdf"
