@@ -14,7 +14,7 @@
 				<key>ShowHeaders</key>
 				<false/>
 				<key>UUID</key>
-				<string>EACEB352-A018-45B8-BED5-22F38D954082</string>
+				<string>60CA12CF-692F-4FD0-B93E-DE7008E7676E</string>
 				<key>WFHTTPBodyType</key>
 				<string>File</string>
 				<key>WFHTTPMethod</key>
@@ -30,16 +30,16 @@
 					<string>WFTextTokenAttachment</string>
 				</dict>
 				<key>WFURL</key>
-				<string>https://air.tailfe12dc.ts.net/api/quick/?k=AWEYcvNTECYFfPTrk2PZDaJl&amp;as=url</string>
+				<string>https://air.tailfe12dc.ts.net/api/quick/?k=AWEYcvNTECYFfPTrk2PZDaJl&amp;as=pdf</string>
 			</dict>
 		</dict>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
-			<string>is.workflow.actions.openurl</string>
+			<string>is.workflow.actions.previewdocument</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>13912C66-A26D-403B-BD2A-B2C8DA8F41D4</string>
+				<string>AE25F6D0-9560-4D21-AC39-ED9365FF6DDF</string>
 			</dict>
 		</dict>
 	</array>
