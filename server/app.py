@@ -42,7 +42,13 @@ def remember_output(name, title, src, dst):
 
 
 def pick_tonic(doc, maj, rel_minor):
-    """Major or relative minor? Let the chord symbols decide."""
+    """Which chord is this chart's tonic? Let the chord symbols decide.
+
+    A key signature never names one key. Five flats fits D flat major, B flat
+    minor AND F minor - "Golden Boy" is in F minor, opens on F minor and plays
+    it more than any other chord, yet a test that only weighs the major
+    against its relative minor cannot ever choose it.
+    """
     import collections, re as _re
     from sheet_transpose.omr import is_chord_font
     roots = collections.Counter()
@@ -62,20 +68,38 @@ def pick_tonic(doc, maj, rel_minor):
                         roots[key] += 1
                         seq.append((pno, round(sp["bbox"][1], 1),
                                     sp["bbox"][0], key))
+    if not seq:
+        return maj
     ordered = [k for *_pos, k in sorted(seq)]
-    maj_hits = roots.get((maj, False), 0)
-    min_hits = roots.get((rel_minor, True), 0)
-    # Raw counts alone are nearly a coin toss on a minor tune full of
-    # relative-major colour chords. What actually names the tonic is where
-    # the music starts and where it comes to rest, so the first and final
-    # chords each count as heavily as several passing ones.
-    if ordered:
-        for probe, w in ((ordered[0], 5), (ordered[-1], 5)):
-            if probe == (maj, False):
-                maj_hits += w
-            elif probe == (rel_minor, True):
-                min_hits += w
-    return rel_minor + "m" if min_hits > maj_hits else maj
+    # Candidates: the major the signature spells, its relative minor, and the
+    # other minors that same signature can carry (a minor chart borrows a
+    # raised leading note, so it prints its relative major's signature).
+    cands = {(maj, False), (rel_minor, True)}
+    for (r, mi), _n in roots.items():
+        if mi:
+            cands.add((r, mi))
+    best, bestscore = None, ()
+    for cand in cands:
+        home = cand in ((maj, False), (rel_minor, True))
+        if not home and ordered[0] != cand and ordered[-1] != cand:
+            # a chart in a minor its signature does not spell has to earn it:
+            # only an opening or closing chord makes that case
+            continue
+        # Raw counts alone are nearly a coin toss on a minor tune full of
+        # relative-major colour chords. What actually names the tonic is
+        # where the music starts and where it comes to rest, so the first
+        # and last chords each count as heavily as several passing ones.
+        score = (roots.get(cand, 0)
+                 + 5 * (ordered[0] == cand) + 5 * (ordered[-1] == cand))
+        # Ties go to the chord the music STARTS on, then to the key the
+        # signature actually spells: "aluf haolam" opens on B flat minor and
+        # ends on E flat minor with ten of each, and it is in B flat minor.
+        rank = (score, ordered[0] == cand, home)
+        if rank > bestscore:
+            best, bestscore = cand, rank
+    if not best:
+        return maj
+    return best[0] + "m" if best[1] else best[0]
 
 
 # ----------------------------------------------------------------- detection
