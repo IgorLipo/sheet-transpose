@@ -385,8 +385,9 @@ async def quick(request: Request, dst: str = None):
         # A Shortcut cannot preview a web page, so when one asks for the key
         # page it is told WHERE to find it and opens that in Safari instead.
         if request.query_params.get("as") == "pdf":
-            # A Shortcut can preview a PDF but not a web page, so the chooser
-            # itself is drawn as one, with every key a tappable link.
+            # The chooser is a fallback for a caller that could not name a
+            # key. It is deliberately NOT the normal path: a shortcut that
+            # asks for the key sends one, and gets that one chart back.
             return FileResponse(all_keys_pdf(held, info),
                                 media_type="application/pdf",
                                 filename=((info.get("title") or "chart")
