@@ -219,8 +219,9 @@ async def transpose(token: str = Form(None), chart_id: str = Form(None),
             "warnings": warn}
 
 
+@app.post("/api/quick/{dst}")
 @app.post("/api/quick")
-async def quick(request: Request):
+async def quick(request: Request, dst: str = None):
     """One round trip for the iOS Shortcut: PDF in, transposed PDF out.
 
     The chart arrives either as a form upload or as the raw request body - a
@@ -242,7 +243,10 @@ async def quick(request: Request):
         # other than application/pdf, so the content decides, not the header.
         body = await request.body()
     q = request.query_params
-    dst = (form.get("dst") or q.get("dst") or "").strip()
+    # The key may be the last path segment, which is the one place a Shortcut
+    # cannot leave empty: an unresolved token in a query string still sends
+    # dst= with nothing after it, and the request looks valid.
+    dst = (dst or form.get("dst") or q.get("dst") or "").strip()
     src = form.get("src") or q.get("src")
     if not dst:
         # a Shortcut whose key picker did not resolve sends dst= empty, and a

@@ -8,13 +8,26 @@
 	<array>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.ask</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>UUID</key>
+				<string>9F450353-ADD9-4C99-8653-1FA6A839ACE2</string>
+				<key>WFAskActionPrompt</key>
+				<string>Transpose to which key?</string>
+				<key>WFInputType</key>
+				<string>Text</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
 			<string>is.workflow.actions.downloadurl</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>ShowHeaders</key>
 				<false/>
 				<key>UUID</key>
-				<string>889BA6A2-1CFE-436F-B079-490DEA50F2E3</string>
+				<string>532AA103-683B-428A-8C75-70233DA3F5E1</string>
 				<key>WFHTTPBodyType</key>
 				<string>File</string>
 				<key>WFHTTPMethod</key>
@@ -35,16 +48,18 @@
 					<dict>
 						<key>attachmentsByRange</key>
 						<dict>
-							<key>71</key>
+							<key>40</key>
 							<dict>
-								<key>Prompt</key>
-								<string>Transpose to which key?</string>
+								<key>OutputName</key>
+								<string>Provided Input</string>
+								<key>OutputUUID</key>
+								<string>9F450353-ADD9-4C99-8653-1FA6A839ACE2</string>
 								<key>Type</key>
-								<string>Ask</string>
+								<string>ActionOutput</string>
 							</dict>
 						</dict>
 						<key>string</key>
-						<string>https://air.tailfe12dc.ts.net/api/quick?k=AWEYcvNTECYFfPTrk2PZDaJl&amp;dst=￼</string>
+						<string>https://air.tailfe12dc.ts.net/api/quick/￼?k=AWEYcvNTECYFfPTrk2PZDaJl</string>
 					</dict>
 					<key>WFSerializationType</key>
 					<string>WFTextTokenString</string>
@@ -57,7 +72,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>C98E9BF6-B137-43BC-A87F-6934DB56E7F2</string>
+				<string>3FEEF151-9D70-4598-957F-E35F6138275C</string>
 				<key>WFOpenInAskWhenRun</key>
 				<true/>
 			</dict>
