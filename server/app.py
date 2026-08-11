@@ -222,6 +222,57 @@ async def transpose(token: str = Form(None), chart_id: str = Form(None),
             "warnings": warn}
 
 
+def all_keys_pdf(srcpath, info):
+    """One PDF holding the chooser and every transposed version.
+
+    A Shortcut can show a PDF but cannot come back for a second round trip,
+    so the answer to every possible tap has to be in the file it is handed.
+    Tapping a key jumps to that version's page - inside Quick Look, with the
+    shortcut already finished.
+    """
+    import pymupdf
+    src = info.get("key") or "?"
+    minor = src.endswith("m")
+    names = [k + ("m" if minor else "") for k in KEYS
+             if k + ("m" if minor else "") != src]
+    # Build the versions FIRST: inserting pages invalidates any page object
+    # held across the call, so the chooser is drawn once they are all in.
+    doc = pymupdf.open()
+    spots, first = [], {}
+    for n in names:
+        out = OUT / f"k-{uuid.uuid4().hex[:8]}.pdf"
+        r = subprocess.run([PY, "-m", "sheet_transpose", str(srcpath),
+                            "--from", src, "--to", n, "-o", str(out)],
+                           capture_output=True, text=True, cwd=str(ROOT))
+        if not out.exists():
+            continue
+        sub = pymupdf.open(out)
+        first[n] = doc.page_count          # where this version starts
+        doc.insert_pdf(sub)
+        sub.close()
+        out.unlink(missing_ok=True)
+        spots.append(n)
+    page = doc.new_page(0, width=420, height=560)     # chooser goes in front
+    first = {n: i + 1 for n, i in first.items()}      # every version moved down
+    page.draw_rect(page.rect, color=None, fill=(0.03, 0.03, 0.04))
+    page.insert_text((28, 52), (info.get("title") or "chart")[:32],
+                     fontsize=21, color=(0.95, 0.95, 0.97))
+    page.insert_text((28, 76), f"Now in {src} - tap the key you want",
+                     fontsize=11.5, color=(0.55, 0.57, 0.62))
+    x0, y0, w, h, gap = 28, 100, 116, 66, 12
+    for i, n in enumerate(spots):
+        cx, cy = x0 + (i % 3) * (w + gap), y0 + (i // 3) * (h + gap)
+        r = pymupdf.Rect(cx, cy, cx + w, cy + h)
+        page.draw_rect(r, color=None, fill=(0.37, 0.61, 1.0), radius=0.22)
+        page.insert_textbox(r + (0, h / 2 - 13, 0, 0), n, fontsize=20,
+                            align=1, color=(1, 1, 1))
+        page.insert_link({"kind": pymupdf.LINK_GOTO, "from": r,
+                          "page": first[n], "to": pymupdf.Point(0, 0)})
+    outp = OUT / f"keys-{uuid.uuid4().hex[:8]}.pdf"
+    doc.save(outp, garbage=3, deflate=True)
+    return outp
+
+
 def keys_pdf(token, info):
     """Draw the key chooser as a one-page PDF whose keys are links.
 
@@ -234,6 +285,13 @@ def keys_pdf(token, info):
     names = [k + ("m" if minor else "") for k in KEYS if k + ("m" if minor else "") != src]
     doc = pymupdf.open()
     page = doc.new_page(width=420, height=560)
+    page.draw_rect(page.rect, color=None, fill=(0.03, 0.03, 0.04))
+    page.insert_text((28, 52), (info.get("title") or "chart")[:32],
+                     fontsize=21, color=(0.95, 0.95, 0.97))
+    page.insert_text((28, 76), f"Now in {src} - tap the key you want",
+                     fontsize=11.5, color=(0.55, 0.57, 0.62))
+    page = doc.new_page(0, width=420, height=560)     # chooser goes in front
+    first = {n: i + 1 for n, i in first.items()}      # every version moved down
     page.draw_rect(page.rect, color=None, fill=(0.03, 0.03, 0.04))
     page.insert_text((28, 52), (info.get("title") or "chart")[:32],
                      fontsize=21, color=(0.95, 0.95, 0.97))
@@ -329,9 +387,10 @@ async def quick(request: Request, dst: str = None):
         if request.query_params.get("as") == "pdf":
             # A Shortcut can preview a PDF but not a web page, so the chooser
             # itself is drawn as one, with every key a tappable link.
-            return FileResponse(keys_pdf(held.name, info),
+            return FileResponse(all_keys_pdf(held, info),
                                 media_type="application/pdf",
-                                filename="Pick a key.pdf")
+                                filename=((info.get("title") or "chart")
+                                          + " - pick a key.pdf"))
         return HTMLResponse(pick_page(held.name, info))
     tmp = OUT / f"an-{uuid.uuid4().hex}.pdf"
     tmp.write_bytes(body)
