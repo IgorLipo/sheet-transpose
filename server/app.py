@@ -28,7 +28,17 @@ def db():
     c.execute("""CREATE TABLE IF NOT EXISTS charts(
         id TEXT PRIMARY KEY, title TEXT, src_key TEXT,
         pages INT, added REAL)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS outputs(
+        name TEXT PRIMARY KEY, title TEXT, src_key TEXT,
+        dst_key TEXT, added REAL)""")
     return c
+
+
+def remember_output(name, title, src, dst):
+    c = db()
+    c.execute("INSERT OR REPLACE INTO outputs VALUES(?,?,?,?,?)",
+              (name, title, src, dst, time.time()))
+    c.commit()
 
 
 def pick_tonic(doc, maj, rel_minor):
@@ -148,8 +158,58 @@ async def transpose(token: str = Form(None), chart_id: str = Form(None),
         m = re.search(r"chords_unavailable': '([^']*)'", log)
         if m:
             warn.append("Some chords kept their original spelling: " + m.group(1))
+    remember_output(outpdf.name, stem, src, dst)
     return {"url": f"/api/file/{outpdf.name}", "name": outpdf.name,
             "warnings": warn}
+
+
+@app.post("/api/quick")
+async def quick(file: UploadFile = File(...), dst: str = Form(...),
+                src: str = Form(None)):
+    """One round trip for the iOS Shortcut: PDF in, transposed PDF out.
+
+    The source key is detected from the chart itself unless given, and the
+    result lands in the transposed library like any other run.
+    """
+    tmp = OUT / f"an-{uuid.uuid4().hex}.pdf"
+    tmp.write_bytes(await file.read())
+    info = detect(str(tmp))
+    src = src or info.get("key")
+    if not src:
+        raise HTTPException(422, info.get("error") or "could not read the key")
+    # match the tonic mode: a minor chart goes to a minor destination
+    if src.endswith("m") != dst.endswith("m"):
+        dst = dst + "m" if src.endswith("m") else dst.rstrip("m")
+    title = re.sub(r"[^\w\- ]", "", info.get("title")
+                   or (file.filename or "chart").rsplit(".", 1)[0])[:60] or "chart"
+    outpdf = OUT / f"{title} [{dst}] {uuid.uuid4().hex[:6]}.pdf"
+    r = subprocess.run([PY, "-m", "sheet_transpose", str(tmp), "--from", src,
+                        "--to", dst, "-o", str(outpdf)],
+                       capture_output=True, text=True, cwd=str(ROOT))
+    if not outpdf.exists():
+        raise HTTPException(500, (r.stdout + r.stderr)[-800:] or "transpose failed")
+    remember_output(outpdf.name, title, src, dst)
+    return FileResponse(outpdf, media_type="application/pdf",
+                        filename=outpdf.name)
+
+
+@app.get("/api/outputs")
+def outputs():
+    c = db()
+    rows = c.execute("SELECT name,title,src_key,dst_key,added FROM outputs "
+                     "ORDER BY added DESC").fetchall()
+    return [{"name": r[0], "title": r[1], "src": r[2], "dst": r[3],
+             "url": f"/api/file/{r[0]}"}
+            for r in rows if (OUT / r[0]).exists()]
+
+
+@app.delete("/api/outputs/{name}")
+def del_output(name: str):
+    c = db()
+    c.execute("DELETE FROM outputs WHERE name=?", (name,))
+    c.commit()
+    (OUT / name).unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.get("/api/file/{name}")

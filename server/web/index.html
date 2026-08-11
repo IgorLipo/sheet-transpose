@@ -219,6 +219,9 @@ body.done .go .btn{height:48px;font-size:16px;opacity:.9}
   </div>
 
   <div class="note err hide" id="err" style="margin-top:14px"></div>
+
+  <div class="lbl" id="liblbl" style="display:none">Transposed library</div>
+  <div id="lib"></div>
 </div>
 
 <div class="go">
@@ -324,10 +327,36 @@ $("go").onclick=async()=>{
     else w.classList.add("hide");
     $("res").classList.add("on");document.body.classList.add("done");
     $("res").scrollIntoView({behavior:"smooth",block:"end"});
+    loadLib();
     tap(18);
   }catch(e){fail("Transpose failed. "+String(e.message||e))}
   finally{b.classList.remove("busy");b.disabled=false;$("golbl").textContent="Transpose"}
 };
+
+// ---------- transposed library ----------
+async function loadLib(){
+  try{
+    const r=await fetch("/api/outputs");if(!r.ok)return;
+    const rows=await r.json();
+    $("liblbl").style.display=rows.length?"":"none";
+    const box=$("lib");box.innerHTML="";
+    for(const o of rows){
+      const d=document.createElement("div");
+      d.className="glass";d.style.cssText="padding:13px 15px;margin-top:9px;display:flex;align-items:center;gap:11px";
+      d.innerHTML=`<div style="flex:1;min-width:0">
+          <div style="font:590 15px/1.3 -apple-system,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${o.title}</div>
+          <div style="color:var(--faint);font-size:12px;margin-top:2px">${o.src} → ${o.dst}</div></div>
+        <a href="${o.url}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font:590 14px/1 -apple-system,sans-serif;padding:9px 13px;border-radius:11px;background:var(--fill);border:1px solid var(--stroke)">Open</a>
+        <button data-n="${o.name}" style="border:0;background:transparent;color:var(--faint);font-size:17px;cursor:pointer;padding:6px">✕</button>`;
+      d.querySelector("button").onclick=async ev=>{
+        await fetch("/api/outputs/"+encodeURIComponent(ev.target.dataset.n),{method:"DELETE"});
+        loadLib();
+      };
+      box.appendChild(d);
+    }
+  }catch(e){}
+}
+loadLib();
 
 // ---------- health ----------
 (async function ping(){
