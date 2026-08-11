@@ -12,7 +12,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>6B8272BD-9262-4F68-927D-B42F75555B3F</string>
+				<string>031DC23D-785B-44ED-81A0-BD3B7E458B61</string>
 				<key>WFChooseFromListActionPrompt</key>
 				<string>Transpose to which key?</string>
 				<key>WFInput</key>
@@ -48,7 +48,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>3784341F-3198-4456-B0CB-2CD6C5BBAE8B</string>
+				<string>8762D246-23C1-4AE5-90F3-F43C27820804</string>
 				<key>WFVariableName</key>
 				<string>TargetKey</string>
 			</dict>
@@ -59,9 +59,9 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>ShowHeaders</key>
-				<false/>
+				<true/>
 				<key>UUID</key>
-				<string>287F4B5F-197F-4312-B7F9-CA4B6348D30F</string>
+				<string>D8F9C49C-4BD4-438C-A4E3-D1710F8D2435</string>
 				<key>WFFormValues</key>
 				<dict>
 					<key>Value</key>
@@ -137,10 +137,49 @@
 				</dict>
 				<key>WFHTTPBodyType</key>
 				<string>Form</string>
+				<key>WFHTTPHeaders</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>WFDictionaryFieldValueItems</key>
+						<array>
+							<dict>
+								<key>WFItemType</key>
+								<integer>0</integer>
+								<key>WFKey</key>
+								<dict>
+									<key>Value</key>
+									<dict>
+										<key>attachmentsByRange</key>
+										<dict/>
+										<key>string</key>
+										<string>X-Transpose-Token</string>
+									</dict>
+									<key>WFSerializationType</key>
+									<string>WFTextTokenString</string>
+								</dict>
+								<key>WFValue</key>
+								<dict>
+									<key>Value</key>
+									<dict>
+										<key>attachmentsByRange</key>
+										<dict/>
+										<key>string</key>
+										<string>AWEYcvNTECYFfPTrk2PZDaJl</string>
+									</dict>
+									<key>WFSerializationType</key>
+									<string>WFTextTokenString</string>
+								</dict>
+							</dict>
+						</array>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFDictionaryFieldValue</string>
+				</dict>
 				<key>WFHTTPMethod</key>
 				<string>POST</string>
 				<key>WFURL</key>
-				<string>http://100.80.87.53:8420/api/quick</string>
+				<string>https://air.tailfe12dc.ts.net/api/quick</string>
 			</dict>
 		</dict>
 		<dict>
@@ -149,7 +188,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>CB670CE7-72D2-403A-8543-67213E378747</string>
+				<string>2331A3B3-0276-4653-A3AE-40318F26A05A</string>
 				<key>WFOpenInAskWhenRun</key>
 				<true/>
 			</dict>

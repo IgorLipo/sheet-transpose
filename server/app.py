@@ -22,6 +22,38 @@ KEYS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
 
 app = FastAPI(title="Sheet Transpose")
 
+# Tailscale Funnel puts this service on the public internet so the phone can
+# reach it from any network, which also means anyone who guesses the hostname
+# can reach it. A shared secret - sent as a header, a query string or a cookie
+# so it survives both the Shortcut and a tap on a link - keeps it ours.
+TOKEN = os.environ.get("TRANSPOSE_TOKEN", "").strip()
+OPEN_PATHS = ("/api/health", "/install.html", "/manifest.webmanifest",
+              "/transpose-chart.shortcut")
+
+
+@app.middleware("http")
+async def gate(request: Request, call_next):
+    if TOKEN and not request.url.path.startswith(OPEN_PATHS):
+        given = (request.headers.get("x-transpose-token")
+                 or request.query_params.get("k")
+                 or request.cookies.get("tk"))
+        if given != TOKEN:
+            if request.url.path.startswith("/api/"):
+                return JSONResponse({"detail": "unauthorised"}, status_code=401)
+            return HTMLResponse(
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<body style='background:#07070A;color:#F2F3F7;font:17px -apple-system;"
+                "display:grid;place-items:center;height:100vh;margin:0'>"
+                "<div style='text-align:center'><div style='font-size:34px'>&#9837;</div>"
+                "<p>Open this from your own link.</p></div>", status_code=401)
+    resp = await call_next(request)
+    # a correct key in the URL is remembered, so the home-screen app and every
+    # link it opens keep working without the key trailing behind them
+    if TOKEN and request.query_params.get("k") == TOKEN:
+        resp.set_cookie("tk", TOKEN, max_age=60 * 60 * 24 * 3650,
+                        httponly=True, samesite="lax", secure=True)
+    return resp
+
 
 def db():
     c = sqlite3.connect(DB)

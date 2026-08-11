@@ -45,7 +45,13 @@ b{color:#F2F3F7;font-weight:590}
   <p>Share a chart from ForScore, pick a key, get it back transposed.</p>
 
   <a class="btn" href="/transpose-chart.shortcut">Add the Shortcut</a>
-  <a class="btn alt" href="/">Open the web app</a>
+  <a class="btn alt" id="web" href="/">Open the web app</a>
+  <script>
+  // Carry the key from this page's own link into the web app, which then
+  // remembers it: the home-screen icon must keep working on its own.
+  (function(){var k=new URLSearchParams(location.search).get("k");
+   if(k)document.getElementById("web").href="/?k="+encodeURIComponent(k);})();
+  </script>
 
   <div class="card">
     <h2>Setting it up</h2>

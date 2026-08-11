@@ -6,3 +6,4 @@ out/
 library/
 *.db
 _svg/
+server/token.txt
