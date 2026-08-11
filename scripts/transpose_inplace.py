@@ -749,6 +749,58 @@ def chord_font_advances(page):
     return out
 
 
+
+# A chord written as plain text, not in the chord font. Sibelius lets a
+# copyist type a symbol straight onto the score - "Alabina" has its Em and
+# Bm that way - and those must transpose with the rest or the chart ends up
+# in two keys at once. Matching by SHAPE, never by colour: a red chord and a
+# black one are the same chord, and other charts use blue, green or grey.
+TEXT_CHORD_RE = re.compile(
+    r"^[A-G](?:#|b|\u00a8|\u00a9)?"                # root, optional accidental
+    r"(?:m|min|maj|dim|aug|sus|add|M|\u2039)?"      # quality
+    r"[0-9()#b+\-/]*"                              # extensions, slash bass
+    r"(?:/[A-G](?:#|b)?)?$")                        # bass note
+
+
+def text_chord_runs(page, els, gm, H, geom):
+    """Elements whose text is a chord symbol typed in an ordinary font.
+
+    The test is deliberately strict. A staff carries plenty of short text
+    that merely looks like a note name - the section marker "A", a bar
+    number, a lyric - so a run only counts when it reads as a chord AND
+    sits in the band just above a staff where chords belong, and never at
+    the far-left margin where markers and bar numbers live.
+    """
+    if not geom:
+        return set()
+    out = set()
+    for e in els:
+        if e.kind != "text" or not e.glyphs or e.bt is None:
+            continue
+        g0 = gm.get((round(e.glyphs[0][0], 1),
+                     round(H - e.glyphs[0][1], 1)))
+        if not g0 or is_chord_font(g0[1]) or is_music_font(g0[1]):
+            continue
+        # Read the element's OWN character codes. Several glyphs of one run
+        # can share a rounded origin, and a position lookup then returns the
+        # same letter twice - "Em" arrives as "EE" and matches nothing.
+        txt = "".join(chr(g[3]) for g in e.glyphs
+                      if len(g) > 3 and isinstance(g[3], int)
+                      and 32 <= g[3] < 0x3000).strip()
+        if len(txt) < 1 or not TEXT_CHORD_RE.match(txt):
+            continue
+        # a bare letter is a section marker as often as a chord, so it must
+        # earn its place by sitting where chords sit
+        x0, y0 = e.glyphs[0][0], H - e.glyphs[0][1]
+        for st in geom:
+            if x0 < st["x0"] + 12:            # the margin: markers, numbers
+                continue
+            if st["top"] - st["half"] * 7 < y0 < st["top"] - st["half"] * 0.4:
+                out.add(id(e))
+                break
+    return out
+
+
 def chord_edits(page, data, els, gm, H, steps, semis, flats):
     """Retypeset every chord symbol in the transposed key."""
 
@@ -771,9 +823,12 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
             self.bt, self.et, self.ctm = e.bt, e.et, e.ctm
 
     runs, items = [], []
+    # chords typed in an ordinary font rather than the chord font
+    plain = text_chord_runs(page, els, gm, H, staff_geom(page))
     for e in els:
         if e.kind != "text" or not e.glyphs or e.bt is None:
             continue
+        as_chord = id(e) in plain
         # Group glyphs by shown string. A batched export interleaves chord
         # strings with bar numbers and notation in ONE element, so the
         # element's first glyph says nothing about any particular string.
@@ -785,7 +840,7 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
         for span, gis in sorted(spans.items()):
             gtab = [gm.get((round(e.glyphs[k][0], 1),
                             round(H - e.glyphs[k][1], 1))) for k in gis]
-            if not all(g and is_chord_font(g[1]) for g in gtab):
+            if not all(g and (is_chord_font(g[1]) or as_chord) for g in gtab):
                 continue
             # (char, cid) stay PAIRED even when a separator space is added:
             # zipping two lists of different lengths silently skews the cid
@@ -804,10 +859,21 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
                 bb = g[2] if len(g) > 2 and g[2] else None
                 prev_right = bb[2] if bb else x + 6.0
             chars = [c for c, _cid in pairs]
+            if as_chord:
+                # Position lookups collapse glyphs that share a rounded
+                # origin, so a plain-font symbol reads as its first letter
+                # repeated. Its own character codes are the truth.
+                chars = [chr(e.glyphs[k][3]) for k in gis
+                         if len(e.glyphs[k]) > 3
+                         and isinstance(e.glyphs[k][3], int)]
+                pairs = [(c, None) for c in chars]
             fontname = gtab[0][1]
             items.append((Piece(e, gis, "".join(chars), nspans > 1),
                           "".join(chars), fontname))
-            if nspans == 1:
+            if nspans == 1 or as_chord:
+                # A chord typed in an ordinary font must contribute its glyph
+                # codes too, or the rewrite has no letters to write with and
+                # the symbol is erased instead of transposed.
                 whole_chord_element = (pairs,)
         if whole_chord_element:
             pairs, = whole_chord_element
@@ -999,8 +1065,20 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
         if nat > avail > 0:
             sq = max(0.78, avail / nat)
         onebyte = (e.glyphs[0][2] or "").lstrip("/") in simple
-        rep = CH.rebuild(data[e.bt:e.et], new, cid, width, fallback, sq,
-                         hexw=2 if onebyte else 4)
+        if id(e.e) in plain:
+            # A chord typed in an ordinary font: its letters are plain ASCII
+            # in a font that has the whole alphabet, so swap the characters
+            # inside the existing show operator. Rebuilding it in a chord
+            # face would lose the run's own font, size and colour - which is
+            # what makes these symbols red in the first place.
+            rep = None
+            m = STR_RE.search(data[e.bt:e.et])
+            if m and len(new) and all(32 <= ord(c) < 127 for c in new):
+                blk = data[e.bt:e.et]
+                rep = blk[:m.start()] + esc(new.encode("latin-1")) + blk[m.end():]
+        else:
+            rep = CH.rebuild(data[e.bt:e.et], new, cid, width, fallback, sq,
+                             hexw=2 if onebyte else 4)
         if rep is not None:
             edits[(e.bt, e.et)] = rep
             for extra in group[1:]:          # symbol was split across blocks
