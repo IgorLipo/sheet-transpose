@@ -12,7 +12,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>41053C24-8BBB-4C17-93C7-7FED8D207265</string>
+				<string>A92D7182-13F8-4F71-8A0A-728C1196D457</string>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
@@ -33,7 +33,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>86364101-EDD4-45EF-B5AF-0DA6723E0CFF</string>
+				<string>1ACDA7D2-01DA-49A2-9158-E6A3628AE938</string>
 				<key>WFChooseFromListActionPrompt</key>
 				<dict>
 					<key>Value</key>
@@ -195,24 +195,13 @@
 		</dict>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
-			<string>is.workflow.actions.setvariable</string>
-			<key>WFWorkflowActionParameters</key>
-			<dict>
-				<key>UUID</key>
-				<string>74C5CEF5-0261-4C08-9232-EA683598BBC9</string>
-				<key>WFVariableName</key>
-				<string>TargetKey</string>
-			</dict>
-		</dict>
-		<dict>
-			<key>WFWorkflowActionIdentifier</key>
 			<string>is.workflow.actions.downloadurl</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>ShowHeaders</key>
 				<false/>
 				<key>UUID</key>
-				<string>70DE4316-EAF3-4F03-91B0-EE099BCC38FC</string>
+				<string>2C0E5239-A9DC-40D4-BAF9-2C2E09493367</string>
 				<key>WFHTTPBodyType</key>
 				<string>File</string>
 				<key>WFHTTPMethod</key>
@@ -237,10 +226,12 @@
 						<dict>
 							<key>71</key>
 							<dict>
+								<key>OutputName</key>
+								<string>Chosen Item</string>
+								<key>OutputUUID</key>
+								<string>1ACDA7D2-01DA-49A2-9158-E6A3628AE938</string>
 								<key>Type</key>
-								<string>Variable</string>
-								<key>VariableName</key>
-								<string>TargetKey</string>
+								<string>ActionOutput</string>
 							</dict>
 						</dict>
 						<key>string</key>
@@ -257,7 +248,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>CF2EFA9D-DCA9-4295-8AC7-411BA69EB1FE</string>
+				<string>B9B0C126-7D57-4695-B2D1-D17C1ADD3584</string>
 				<key>WFOpenInAskWhenRun</key>
 				<true/>
 			</dict>

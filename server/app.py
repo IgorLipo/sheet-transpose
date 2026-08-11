@@ -220,23 +220,38 @@ async def transpose(token: str = Form(None), chart_id: str = Form(None),
 
 
 @app.post("/api/quick")
-async def quick(request: Request, file: UploadFile = File(None),
-                dst: str = Form(None), src: str = Form(None)):
+async def quick(request: Request):
     """One round trip for the iOS Shortcut: PDF in, transposed PDF out.
 
-    The chart arrives either as a form upload or as the raw request body -
-    a Shortcut posting a file straight from the share sheet sends the latter,
+    The chart arrives either as a form upload or as the raw request body - a
+    Shortcut posting a file straight from the share sheet sends the latter,
     and naming the parts of a multipart body is the fragile bit of the whole
-    chain. The target key may likewise come from the form or the query string.
+    chain. The body is read here rather than through File/Form parameters,
+    which consume the stream before the raw path can look at it.
     """
-    dst = dst or request.query_params.get("dst")
-    src = src or request.query_params.get("src")
+    ctype = request.headers.get("content-type", "")
+    body, form = b"", {}
+    if ctype.startswith("multipart/"):
+        form = await request.form()
+        up = form.get("file")
+        if up is not None and hasattr(up, "read"):
+            body = await up.read()
+    else:
+        # Anything else is taken as the chart itself. A Shortcut posting a
+        # file, and curl with --data-binary, both label the body something
+        # other than application/pdf, so the content decides, not the header.
+        body = await request.body()
+    q = request.query_params
+    dst = (form.get("dst") or q.get("dst") or "").strip()
+    src = form.get("src") or q.get("src")
     if not dst:
-        raise HTTPException(422, "no target key")
-    tmp = OUT / f"an-{uuid.uuid4().hex}.pdf"
-    body = await file.read() if file is not None else await request.body()
+        # a Shortcut whose key picker did not resolve sends dst= empty, and a
+        # bare 422 shows the player nothing at all
+        raise HTTPException(422, "No target key came through. Re-add the "
+                                 "shortcut from the install page.")
     if not body:
         raise HTTPException(422, "no chart in the request")
+    tmp = OUT / f"an-{uuid.uuid4().hex}.pdf"
     tmp.write_bytes(body)
     info = detect(str(tmp))
     src = src or info.get("key")
