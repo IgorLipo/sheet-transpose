@@ -7,7 +7,8 @@ import os, re, io, json, uuid, shutil, subprocess, sys, sqlite3, time
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import (FileResponse, JSONResponse, HTMLResponse,
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent
@@ -290,6 +291,11 @@ async def quick(request: Request, dst: str = None):
         held = OUT / f"an-{uuid.uuid4().hex}.pdf"
         held.write_bytes(body)
         info = detect(str(held))
+        # A Shortcut cannot preview a web page, so when one asks for the key
+        # page it is told WHERE to find it and opens that in Safari instead.
+        if request.query_params.get("as") == "url":
+            return PlainTextResponse(
+                f"{request.base_url}api/keys/{held.name}?k={TOKEN}")
         return HTMLResponse(pick_page(held.name, info))
     tmp = OUT / f"an-{uuid.uuid4().hex}.pdf"
     tmp.write_bytes(body)
@@ -311,6 +317,15 @@ async def quick(request: Request, dst: str = None):
     remember_output(outpdf.name, title, src, dst)
     return FileResponse(outpdf, media_type="application/pdf",
                         filename=outpdf.name)
+
+
+@app.get("/api/keys/{token}")
+def keys_page(token: str):
+    """The key chooser as a normal page, reachable by tapping a link."""
+    p = OUT / token
+    if not p.exists():
+        raise HTTPException(404, "that chart is no longer here")
+    return HTMLResponse(pick_page(token, detect(str(p))))
 
 
 @app.get("/api/pick/{token}/{dst}")
