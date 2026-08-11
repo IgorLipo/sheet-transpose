@@ -8,31 +8,182 @@
 	<array>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.setvariable</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>UUID</key>
+				<string>41053C24-8BBB-4C17-93C7-7FED8D207265</string>
+				<key>WFInput</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>Type</key>
+						<string>ExtensionInput</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenAttachment</string>
+				</dict>
+				<key>WFVariableName</key>
+				<string>Chart</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
 			<string>is.workflow.actions.choosefromlist</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>031DC23D-785B-44ED-81A0-BD3B7E458B61</string>
+				<string>86364101-EDD4-45EF-B5AF-0DA6723E0CFF</string>
 				<key>WFChooseFromListActionPrompt</key>
-				<string>Transpose to which key?</string>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>attachmentsByRange</key>
+						<dict/>
+						<key>string</key>
+						<string>Transpose to which key?</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenString</string>
+				</dict>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
 					<dict>
 						<key>Value</key>
 						<array>
-							<string>C</string>
-							<string>Db</string>
-							<string>D</string>
-							<string>Eb</string>
-							<string>E</string>
-							<string>F</string>
-							<string>Gb</string>
-							<string>G</string>
-							<string>Ab</string>
-							<string>A</string>
-							<string>Bb</string>
-							<string>B</string>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>C</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>Db</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>D</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>Eb</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>E</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>F</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>Gb</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>G</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>Ab</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>A</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>Bb</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
+							<dict>
+								<key>Value</key>
+								<dict>
+									<key>attachmentsByRange</key>
+									<dict/>
+									<key>string</key>
+									<string>B</string>
+								</dict>
+								<key>WFSerializationType</key>
+								<string>WFTextTokenString</string>
+							</dict>
 						</array>
 						<key>WFSerializationType</key>
 						<string>WFArrayParameterState</string>
@@ -48,7 +199,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>8762D246-23C1-4AE5-90F3-F43C27820804</string>
+				<string>74C5CEF5-0261-4C08-9232-EA683598BBC9</string>
 				<key>WFVariableName</key>
 				<string>TargetKey</string>
 			</dict>
@@ -59,127 +210,45 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>ShowHeaders</key>
-				<true/>
+				<false/>
 				<key>UUID</key>
-				<string>D8F9C49C-4BD4-438C-A4E3-D1710F8D2435</string>
-				<key>WFFormValues</key>
-				<dict>
-					<key>Value</key>
-					<dict>
-						<key>WFDictionaryFieldValueItems</key>
-						<array>
-							<dict>
-								<key>WFItemType</key>
-								<integer>5</integer>
-								<key>WFKey</key>
-								<dict>
-									<key>Value</key>
-									<dict>
-										<key>attachmentsByRange</key>
-										<dict/>
-										<key>string</key>
-										<string>file</string>
-									</dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenString</string>
-								</dict>
-								<key>WFValue</key>
-								<dict>
-									<key>Value</key>
-									<dict>
-										<key>Type</key>
-										<string>ExtensionInput</string>
-									</dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenAttachment</string>
-								</dict>
-							</dict>
-							<dict>
-								<key>WFItemType</key>
-								<integer>0</integer>
-								<key>WFKey</key>
-								<dict>
-									<key>Value</key>
-									<dict>
-										<key>attachmentsByRange</key>
-										<dict/>
-										<key>string</key>
-										<string>dst</string>
-									</dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenString</string>
-								</dict>
-								<key>WFValue</key>
-								<dict>
-									<key>Value</key>
-									<dict>
-										<key>attachmentsByRange</key>
-										<dict>
-											<key>0</key>
-											<dict>
-												<key>Type</key>
-												<string>Variable</string>
-												<key>VariableName</key>
-												<string>TargetKey</string>
-											</dict>
-										</dict>
-										<key>string</key>
-										<string>￼</string>
-									</dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenString</string>
-								</dict>
-							</dict>
-						</array>
-					</dict>
-					<key>WFSerializationType</key>
-					<string>WFDictionaryFieldValue</string>
-				</dict>
+				<string>70DE4316-EAF3-4F03-91B0-EE099BCC38FC</string>
 				<key>WFHTTPBodyType</key>
-				<string>Form</string>
-				<key>WFHTTPHeaders</key>
-				<dict>
-					<key>Value</key>
-					<dict>
-						<key>WFDictionaryFieldValueItems</key>
-						<array>
-							<dict>
-								<key>WFItemType</key>
-								<integer>0</integer>
-								<key>WFKey</key>
-								<dict>
-									<key>Value</key>
-									<dict>
-										<key>attachmentsByRange</key>
-										<dict/>
-										<key>string</key>
-										<string>X-Transpose-Token</string>
-									</dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenString</string>
-								</dict>
-								<key>WFValue</key>
-								<dict>
-									<key>Value</key>
-									<dict>
-										<key>attachmentsByRange</key>
-										<dict/>
-										<key>string</key>
-										<string>AWEYcvNTECYFfPTrk2PZDaJl</string>
-									</dict>
-									<key>WFSerializationType</key>
-									<string>WFTextTokenString</string>
-								</dict>
-							</dict>
-						</array>
-					</dict>
-					<key>WFSerializationType</key>
-					<string>WFDictionaryFieldValue</string>
-				</dict>
+				<string>File</string>
 				<key>WFHTTPMethod</key>
 				<string>POST</string>
+				<key>WFRequestVariable</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>Type</key>
+						<string>Variable</string>
+						<key>VariableName</key>
+						<string>Chart</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenAttachment</string>
+				</dict>
 				<key>WFURL</key>
-				<string>https://air.tailfe12dc.ts.net/api/quick</string>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>attachmentsByRange</key>
+						<dict>
+							<key>71</key>
+							<dict>
+								<key>Type</key>
+								<string>Variable</string>
+								<key>VariableName</key>
+								<string>TargetKey</string>
+							</dict>
+						</dict>
+						<key>string</key>
+						<string>https://air.tailfe12dc.ts.net/api/quick?k=AWEYcvNTECYFfPTrk2PZDaJl&amp;dst=￼</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenString</string>
+				</dict>
 			</dict>
 		</dict>
 		<dict>
@@ -188,7 +257,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>2331A3B3-0276-4653-A3AE-40318F26A05A</string>
+				<string>CF2EFA9D-DCA9-4295-8AC7-411BA69EB1FE</string>
 				<key>WFOpenInAskWhenRun</key>
 				<true/>
 			</dict>

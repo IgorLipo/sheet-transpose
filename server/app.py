@@ -220,15 +220,24 @@ async def transpose(token: str = Form(None), chart_id: str = Form(None),
 
 
 @app.post("/api/quick")
-async def quick(file: UploadFile = File(...), dst: str = Form(...),
-                src: str = Form(None)):
+async def quick(request: Request, file: UploadFile = File(None),
+                dst: str = Form(None), src: str = Form(None)):
     """One round trip for the iOS Shortcut: PDF in, transposed PDF out.
 
-    The source key is detected from the chart itself unless given, and the
-    result lands in the transposed library like any other run.
+    The chart arrives either as a form upload or as the raw request body -
+    a Shortcut posting a file straight from the share sheet sends the latter,
+    and naming the parts of a multipart body is the fragile bit of the whole
+    chain. The target key may likewise come from the form or the query string.
     """
+    dst = dst or request.query_params.get("dst")
+    src = src or request.query_params.get("src")
+    if not dst:
+        raise HTTPException(422, "no target key")
     tmp = OUT / f"an-{uuid.uuid4().hex}.pdf"
-    tmp.write_bytes(await file.read())
+    body = await file.read() if file is not None else await request.body()
+    if not body:
+        raise HTTPException(422, "no chart in the request")
+    tmp.write_bytes(body)
     info = detect(str(tmp))
     src = src or info.get("key")
     if not src:
