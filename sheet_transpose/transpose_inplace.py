@@ -762,6 +762,79 @@ TEXT_CHORD_RE = re.compile(
     r"(?:/[A-G](?:#|b)?)?$")                        # bass note
 
 
+
+
+# Sibelius sets colour with scn against a named colour space, not rg
+RG_RE = re.compile(rb"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(?:rg|scn|sc)\b")
+
+
+def text_colour(data, e):
+    """The fill colour in force where this run is drawn.
+
+    A redrawn chord must keep the colour the copyist gave it - these symbols
+    are red on purpose - and the colour is set by an rg operator before the
+    text block rather than inside it.
+    """
+    if e.bt is None:
+        return None
+    m = None
+    for m2 in RG_RE.finditer(data, 0, e.bt):
+        m = m2
+    if not m:
+        return None
+    try:
+        return tuple(float(m.group(i)) for i in (1, 2, 3))
+    except ValueError:
+        return None
+
+
+_EMBEDDED = {}
+
+
+def embedded_chars(page, resname):
+    """Which characters this font resource can actually draw.
+
+    Sibelius embeds only the glyphs the score used, so a chart whose text
+    chords are E and B minor carries no F and no C. Writing one anyway
+    prints nothing where the root should be - the symbol loses its letter
+    and reads as a bare "m". Returns None when coverage cannot be read, so
+    the caller falls back to trusting the font.
+    """
+    key = (id(page.parent), page.number, resname)
+    if key in _EMBEDDED:
+        return _EMBEDDED[key]
+    have = None
+    try:
+        for f in page.get_fonts(full=True):
+            xref, _ext, _typ, _base, name = f[0], f[1], f[2], f[3], f[4]
+            if name != resname:
+                continue
+            buf = page.parent.extract_font(xref)[3]
+            if not buf:
+                break
+            # A subset lies about its coverage: every letter reports the same
+            # advance and bounding box whether or not an outline was kept.
+            # Drawing one is the only honest test - the missing ones print
+            # nothing, which is how a chord loses its root and reads as "m".
+            have = set()
+            for c in range(33, 127):
+                probe = pymupdf.open()
+                pg2 = probe.new_page(width=40, height=40)
+                pg2.insert_font(fontname="sub", fontbuffer=buf)
+                pg2.insert_text((5, 30), chr(c), fontsize=24, fontname="sub")
+                pix = pg2.get_pixmap(dpi=72)
+                if any(pix.samples[i] < 200
+                       for i in range(0, len(pix.samples), pix.n)):
+                    have.add(chr(c))
+                probe.close()
+            have.add(" ")
+            break
+    except Exception:
+        have = None
+    _EMBEDDED[key] = have
+    return have
+
+
 def text_chord_runs(page, els, gm, H, geom):
     """Elements whose text is a chord symbol typed in an ordinary font.
 
@@ -1066,16 +1139,37 @@ def chord_edits(page, data, els, gm, H, steps, semis, flats):
             sq = max(0.78, avail / nat)
         onebyte = (e.glyphs[0][2] or "").lstrip("/") in simple
         if id(e.e) in plain:
-            # A chord typed in an ordinary font: its letters are plain ASCII
-            # in a font that has the whole alphabet, so swap the characters
-            # inside the existing show operator. Rebuilding it in a chord
-            # face would lose the run's own font, size and colour - which is
-            # what makes these symbols red in the first place.
+            # A chord typed in an ordinary font. Swapping the characters in
+            # place keeps the run's own font, size and colour - which is what
+            # makes these symbols red - but only works if the embedded subset
+            # actually carries the new letters. Sibelius embeds just the
+            # glyphs the score used, so a chart with E and B minor has no F
+            # or C, and an in-place swap would print half a symbol.
             rep = None
+            have = embedded_chars(page, (e.glyphs[0][2] or "").lstrip("/"))
             m = STR_RE.search(data[e.bt:e.et])
-            if m and len(new) and all(32 <= ord(c) < 127 for c in new):
+            if (m and len(new) and all(32 <= ord(c) < 127 for c in new)
+                    and (have is None or all(c in have for c in new))):
                 blk = data[e.bt:e.et]
                 rep = blk[:m.start()] + esc(new.encode("latin-1")) + blk[m.end():]
+            else:
+                # the subset has no outline for the new root, so erase the
+                # symbol and draw it with the installed face in its own colour
+                full = CH.find_full_font((e.glyphs[0][2] or "").lstrip("/")) \
+                    or CH.find_full_font(fontname)
+                bb = gm.get((round(e.glyphs[0][0], 1),
+                             round(H - e.glyphs[0][1], 1)))
+                if full and bb:
+                    for pc in group:
+                        edits[(pc.bt, pc.et)] = b" "
+                    redraw.append({"x": e.glyphs[0][0],
+                                   "y": H - e.glyphs[0][1],
+                                   "text": new,
+                                   "size": max(4.0, bb[3] if len(bb) > 3 else 10.0),
+                                   "font": full,
+                                   "color": text_colour(data, e) or (0, 0, 0)})
+                    n += 1
+                    continue
         else:
             rep = CH.rebuild(data[e.bt:e.et], new, cid, width, fallback, sq,
                              hexw=2 if onebyte else 4)
@@ -2037,7 +2131,7 @@ def main():
                                color=(0, 0, 0), width=r["half"] * 0.42)
                 continue
             page.insert_text((r["x"], r["y"]), r["text"], fontsize=r["size"],
-                             fontfile=r["font"],
+                             fontfile=r["font"], color=r.get("color", (0, 0, 0)),
                              fontname="cf" + str(abs(hash(r["font"])) % 9999))
         print(f"  page {i+1}: moved {st['glyph']} glyphs, "
               f"{sum(v for k, v in st.items() if k.startswith('path_') and k not in ('path_staffline','path_barline'))} subpaths")
