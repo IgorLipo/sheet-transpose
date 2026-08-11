@@ -50,7 +50,14 @@ b{color:#F2F3F7;font-weight:590}
   // Carry the key from this page's own link into the web app, which then
   // remembers it: the home-screen icon must keep working on its own.
   (function(){var k=new URLSearchParams(location.search).get("k");
-   if(k)document.getElementById("web").href="/?k="+encodeURIComponent(k);})();
+   if(k)document.getElementById("web").href="/?k="+encodeURIComponent(k);
+   var u=location.origin+"/api/quick?k="+encodeURIComponent(k||"YOUR-KEY")+"&dst=KEY";
+   document.getElementById("url").textContent=u;
+   document.getElementById("copy").onclick=function(){
+     navigator.clipboard.writeText(u).then(function(){
+       var b=document.getElementById("copy");b.textContent="Copied";
+       setTimeout(function(){b.textContent="Copy the URL"},1600);});};
+  })();
   </script>
 
   <div class="card">
@@ -60,6 +67,31 @@ b{color:#F2F3F7;font-weight:590}
       <li>The first run asks to allow the connection to the Air &mdash; tap <b>Allow</b>.</li>
       <li>Make sure <b>Tailscale</b> is connected, or the Air is unreachable.</li>
     </ol>
+  </div>
+
+  <div class="card">
+    <h2>If the shortcut does nothing</h2>
+    <p style="margin:0 0 13px">Build it by hand instead &mdash; it takes a minute
+    and always works. In <b>Shortcuts</b> &rarr; <b>+</b>:</p>
+    <ol>
+      <li>Tap the <b>&#9432;</b> info button &rarr; turn on <b>Show in Share Sheet</b>.
+        Under <b>Share Sheet Types</b>, leave <b>Files</b> ticked.</li>
+      <li>Add action <b>Get Contents of URL</b>. Tap <b>Show More</b>.</li>
+      <li><b>URL</b>: paste the line below, then delete the word <code>KEY</code> at
+        the end and in its place insert the <b>Ask Each Time</b> variable.</li>
+      <li><b>Method</b>: <b>POST</b>. <b>Request Body</b>: <b>File</b>.
+        <b>File</b>: choose the <b>Shortcut Input</b> variable.</li>
+      <li>Add action <b>Open In&hellip;</b> (search &ldquo;open in&rdquo;) so the result
+        comes back to the share sheet.</li>
+      <li>Name it <b>Transpose Chart</b>. Done.</li>
+    </ol>
+    <div style="margin-top:13px;padding:11px 13px;border-radius:12px;
+      background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.10);
+      font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;
+      -webkit-user-select:all;user-select:all" id="url"></div>
+    <button id="copy" style="margin-top:10px;width:100%;height:44px;border-radius:12px;
+      border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.055);
+      color:#F2F3F7;font:590 15px -apple-system,sans-serif">Copy the URL</button>
   </div>
 
   <div class="card">
