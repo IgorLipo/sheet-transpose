@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07070A">
+<title>Install · Transpose</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:#07070A;color:#F2F3F7;
+  font:400 17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  letter-spacing:-.01em;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:-25% -25% auto -25%;height:70vh;z-index:0;
+  background:radial-gradient(45% 42% at 22% 12%,rgba(94,155,255,.30),transparent 70%),
+    radial-gradient(42% 40% at 82% 4%,rgba(156,107,255,.26),transparent 70%);
+  filter:blur(10px);pointer-events:none}
+.wrap{position:relative;z-index:1;max-width:520px;margin:0 auto;
+  padding:calc(env(safe-area-inset-top,0px) + 34px) 20px 60px}
+.logo{width:56px;height:56px;border-radius:17px;display:grid;place-items:center;font-size:29px;
+  background:linear-gradient(150deg,#5E9BFF,#9C6BFF);box-shadow:0 8px 26px rgba(94,155,255,.44)}
+h1{font:600 27px/1.15 "SF Pro Display",-apple-system,sans-serif;margin:20px 0 8px;letter-spacing:-.025em}
+p{color:rgba(242,243,247,.58);margin:0 0 22px;font-size:15.5px}
+.btn{display:flex;align-items:center;justify-content:center;height:56px;border-radius:17px;
+  text-decoration:none;color:#fff;font:600 17.5px/1 "SF Pro Display",-apple-system,sans-serif;
+  background:linear-gradient(160deg,#5E9BFF,#9C6BFF);box-shadow:0 10px 30px rgba(94,155,255,.42);
+  margin-bottom:11px}
+.btn.alt{background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.10);
+  box-shadow:none;color:#F2F3F7}
+.card{background:linear-gradient(180deg,rgba(255,255,255,.085),rgba(255,255,255,.04));
+  border:1px solid rgba(255,255,255,.10);border-radius:22px;padding:20px;margin-top:26px;
+  backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%)}
+.card h2{font:600 13px/1 -apple-system,sans-serif;letter-spacing:.11em;text-transform:uppercase;
+  color:rgba(242,243,247,.30);margin:0 0 15px}
+ol{margin:0;padding-left:21px;color:rgba(242,243,247,.80);font-size:15px}
+li{margin-bottom:11px}li:last-child{margin-bottom:0}
+b{color:#F2F3F7;font-weight:590}
+.warn{margin-top:18px;padding:13px 15px;border-radius:14px;font-size:13.5px;line-height:1.5;
+  background:rgba(255,176,32,.11);border:1px solid rgba(255,176,32,.26);color:#FFD79A}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">&#9837;</div>
+  <h1>Transpose Chart</h1>
+  <p>Share a chart from ForScore, pick a key, get it back transposed.</p>
+
+  <a class="btn" href="/transpose-chart.shortcut">Add the Shortcut</a>
+  <a class="btn alt" href="/">Open the web app</a>
+
+  <div class="card">
+    <h2>Setting it up</h2>
+    <ol>
+      <li>Tap <b>Add the Shortcut</b>. Shortcuts opens; tap <b>Add Shortcut</b>.</li>
+      <li>The first run asks to allow the connection to the Air &mdash; tap <b>Allow</b>.</li>
+      <li>Make sure <b>Tailscale</b> is connected, or the Air is unreachable.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>On a gig</h2>
+    <ol>
+      <li>In ForScore, open the chart &rarr; <b>Share</b> &rarr; <b>Transpose Chart</b>.</li>
+      <li>Pick the key.</li>
+      <li>When it comes back, choose <b>ForScore</b> to file it with the rest.</li>
+    </ol>
+  </div>
+
+  <div class="warn">
+    The Air has to be awake and on the tailnet. Every transposed chart is also
+    kept in the web app&rsquo;s library, so you can pull it down again later.
+  </div>
+</div>
+</body>
+</html>
