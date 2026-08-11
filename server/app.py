@@ -85,24 +85,48 @@ def pick_tonic(doc, maj, rel_minor):
     against its relative minor cannot ever choose it.
     """
     import collections, re as _re
-    from sheet_transpose.omr import is_chord_font
+    from sheet_transpose.omr import is_chord_font, norm_glyph
     roots = collections.Counter()
     seq = []
     for pno, page in enumerate(doc):
-        for b in page.get_text("rawdict")["blocks"]:
-            for l in b.get("lines", []):
-                for sp in l["spans"]:
-                    if not is_chord_font(sp["font"]):
-                        continue
-                    t = "".join(c["c"] for c in sp["chars"]).strip()
-                    m = _re.match(r"^([A-G][\u00a8\u00ab#b]?)", t)
-                    if m:
-                        minor = "\u2039" in t or _re.search(r"m(?!aj)", t)
-                        key = (m.group(1).replace("\u00a8", "b")
-                                         .replace("\u00ab", "#"), bool(minor))
-                        roots[key] += 1
-                        seq.append((pno, round(sp["bbox"][1], 1),
-                                    sp["bbox"][0], key))
+        # Read with the low-level trace, and join runs that sit side by side.
+        # rawdict misses whole chord layers ("le freak" shows it nothing), and
+        # a symbol often arrives split: the A of "Am" in one run, the minor
+        # sign in the next. Judging each run alone calls every chord major,
+        # and an A minor chart then reads as C.
+        glyphs = []
+        for sp in page.get_texttrace():
+            if sp.get("type") != 0 or not sp.get("chars"):
+                continue
+            if not is_chord_font(sp["font"].split("+")[-1]):
+                continue
+            for ucs, _g, org, _b in sp["chars"]:
+                ch = norm_glyph(chr(ucs))
+                # Some subsets map the minor sign to nothing at all, so the
+                # trace reports U+FFFD. Its glyph is still a minor sign, and
+                # without it every chord reads major - "le freak" is in A
+                # minor and came back as C.
+                if ch == "\ufffd":
+                    ch = "m"
+                if ch.strip():
+                    glyphs.append((round(org[1], 1), org[0], ch))
+        glyphs.sort()
+        sym, prev = [], None
+        for y, x, ch in glyphs + [(None, None, None)]:
+            if prev is not None and (y != prev[0] or x - prev[1] > 11):
+                t = "".join(c for _y, _x, c in sym)
+                m = _re.match(r"^([A-G][\u00a8\u00ab#b]?)", t)
+                if m:
+                    minor = ("\u2039" in t or "\x88" in t
+                             or _re.search(r"m(?!aj)", t))
+                    key = (m.group(1).replace("\u00a8", "b")
+                                     .replace("\u00ab", "#"), bool(minor))
+                    roots[key] += 1
+                    seq.append((pno, sym[0][0], sym[0][1], key))
+                sym = []
+            if ch is not None:
+                sym.append((y, x, ch))
+                prev = (y, x)
     if not seq:
         return maj
     ordered = [k for *_pos, k in sorted(seq)]

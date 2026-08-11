@@ -1855,10 +1855,35 @@ def vector_keysig(objs, kinds, info, geom, half, dst_sig, page,
     return edits, redraw
 
 
+def score_xobject(page):
+    """The Form XObject holding the whole score, if the page is a wrapper.
+
+    Some exports ("No Scrubs") put the entire engraving in one form and leave
+    the page itself with a few q/Q fragments and a Do. Editing the page stream
+    then changes nothing, because none of the music is in it.
+    """
+    try:
+        forms = [x for x in page.get_xobjects()
+                 if x[3] and x[3][2] - x[3][0] > page.rect.width * 0.5
+                 and x[3][3] - x[3][1] > page.rect.height * 0.5]
+    except Exception:
+        return None
+    if len(forms) != 1:
+        return None
+    xref = forms[0][0]
+    body = page.parent.xref_stream(xref)
+    if body is None or len(body) < len(page.read_contents()):
+        return None
+    return xref
+
+
 def transpose_page(page, steps, src_sig, dst_sig, semis=0, verbose=False,
                    scale=1.0):
     H = page.rect.height
     data = page.read_contents()
+    form = score_xobject(page)
+    if form is not None:
+        data = page.parent.xref_stream(form)
     els, pops = parse(data, simple_fonts=simple_font_resources(page))
     align_glyphs(page, els, H)
     geom = staff_geom(page)
@@ -2118,11 +2143,35 @@ def main():
             continue
         # Replace the page's content stream. read_contents() concatenates all
         # streams, so the rewritten result goes into the first and the rest are
-        # emptied to avoid drawing anything twice.
+        # emptied to avoid drawing anything twice. A page may LIST the same
+        # stream several times ("No Scrubs" names one 8 times over), and
+        # blanking those repeats would erase the text just written - so only
+        # xrefs that are genuinely different get emptied.
         xrefs = page.get_contents()
-        doc.update_stream(xrefs[0], new)
-        for extra in xrefs[1:]:
-            doc.update_stream(extra, b" ")
+        if len(dict.fromkeys(xrefs)) == 1:
+            doc.update_stream(xrefs[0], new)
+        else:
+            # Several streams, and their ORDER carries the graphics state:
+            # "No Scrubs" splits its page into q / Q fragments and names some
+            # of them more than once. Writing the whole page into the first
+            # and blanking the others breaks that nesting, so each stream
+            # keeps its own slice of the rewritten bytes instead.
+            pos, seen = 0, {}
+            for x in xrefs:
+                n = len(doc.xref_stream(x)) if x not in seen else seen[x]
+                seen[x] = n
+                pos += n + 1              # read_contents joins with a newline
+            cut, at = [], 0
+            for x in xrefs:
+                n = seen[x]
+                cut.append((x, new[at:at + n]))
+                at += n + 1
+            done = set()
+            for x, chunk in cut:
+                if x in done:             # a repeated stream keeps its first
+                    continue               # slice; the repeats replay it
+                done.add(x)
+                doc.update_stream(x, chunk)
         for r in redraw:
             if r.get("ledger"):
                 w = r["half"] * 2.3          # a ledger overhangs the notehead

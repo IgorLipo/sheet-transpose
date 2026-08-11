@@ -9,7 +9,9 @@ import re, os, glob, collections
 # Sibelius chord fonts remap ASCII: these are the glyphs we must read/write.
 # 0xA9 is the sharp; 0xAB is the DOUBLE sharp. Mapping a plain sharp onto
 # 0xAB prints C double-sharp minor where C sharp minor belongs.
-DECODE = {"‹": "m", "¨": "b", "Œ": "ma", "„": "j",
+# 0x88 is the minor sign in some Inkpen chord subsets ("le freak"), where
+# 0x2039 never appears - a chart read without it looks entirely major.
+DECODE = {"‹": "m", "\x88": "m", "¨": "b", "Œ": "ma", "„": "j",
           "Š": "", "©": "#", "«": "##"}
 ENCODE = {"m": "‹", "b": "¨", "#": "©"}
 

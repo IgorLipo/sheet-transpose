@@ -26,7 +26,7 @@ FONT_ROLES = {}
 
 # Characters that only a chord symbol contains. A rehearsal-mark font also
 # prints A-G, so the roots alone cannot identify a chord font.
-_QUALITY = set("m+-/79246ø°#b¨«‹ŒŠ„(")
+_QUALITY = set("m+-/79246ø°#b¨«‹ŒŠ„(\x88")
 
 
 def set_font_roles(roles):
